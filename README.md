@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="logo.png" alt="EchoDock logo" width="180" style="border-radius: 24px;">
+
 <h1>EchoDock</h1>
 
 <p>
@@ -15,8 +17,6 @@
 <p>
   <img alt="macOS 13+" src="https://img.shields.io/badge/macOS-13%2B-111111?logo=apple&amp;logoColor=white">
   <img alt="AppKit" src="https://img.shields.io/badge/UI-AppKit-147EFB?logo=swift&amp;logoColor=white">
-  <img alt="Version 0.1.0" src="https://img.shields.io/badge/version-0.1.0-5B5BD6">
-  <img alt="Development preview" src="https://img.shields.io/badge/status-development%20preview-EF8B2C">
 </p>
 
 <p><a href="#中文">中文</a> · <a href="#english">English</a></p>
@@ -252,12 +252,12 @@ EchoDock adds an independent, interactive app dock to the bottom of each display
 ### Quick start
 
 1. Open `EchoDock.app`. EchoDock stays in the menu bar and does not add itself to the system Dock.
-2. Click the EchoDock menu bar icon and choose “设置…” (Settings).
-3. Open the “显示器” (Displays) page and enable EchoDock for the displays where you want to use it.
-4. EchoDock stays visible at the bottom of enabled displays by default. To reveal it only at the screen edge, turn on “自动隐藏” (Auto Hide) under General.
+2. Click the EchoDock menu bar icon and choose “Settings”.
+3. Open the “Displays” page and enable EchoDock for the displays where you want to use it.
+4. EchoDock stays visible at the bottom of enabled displays by default. To reveal it only at the screen edge, turn on “Auto Hide” under General.
 5. Left-click an icon to launch or switch apps. Right-click for additional actions.
 
-By default, EchoDock is enabled on every available display, stays visible, and includes running apps that are not pinned. Launch bounces and running indicators are also enabled by default. You can turn on Auto Hide under General, or choose “隐藏 EchoDock” (Hide EchoDock) from the menu bar to hide all panels temporarily while keeping synchronization running.
+By default, EchoDock is enabled on every available display, stays visible, and includes running apps that are not pinned. Launch bounces and running indicators are also enabled by default. You can turn on Auto Hide under General, or choose “Hide EchoDock” from the menu bar to hide all panels temporarily while keeping synchronization running.
 
 ### How to use it
 
@@ -337,9 +337,9 @@ Accessibility permission is required to:
 - relocate and protect the system Dock in fixed mode;
 - close another app's window from the context menu.
 
-Open Settings → General → Accessibility Permission, click “申请辅助功能权限” (Request Accessibility Permission), then allow EchoDock under System Settings → Privacy & Security → Accessibility. Reopen the Settings page or context menu after granting permission; the status updates automatically.
+Open Settings → General → Accessibility Permission, click “Request Accessibility Permission”, then allow EchoDock under System Settings → Privacy & Security → Accessibility. Reopen the Settings page or context menu after granting permission; the status updates automatically.
 
-“Close Window” is enabled only when EchoDock has Accessibility permission and the target app has an eligible window. Without permission, the item is disabled and displays “需要辅助功能权限” (Accessibility Permission Required).
+“Close Window” is enabled only when EchoDock has Accessibility permission and the target app has an eligible window. Without permission, the item is disabled and displays “Accessibility Permission Required”.
 
 ### Choosing a display for the system Dock
 
@@ -384,14 +384,14 @@ The current application UI is in Simplified Chinese. Dual-display, triple-displa
 <details>
 <summary><strong>EchoDock does not appear</strong></summary>
 
-The menu bar should offer “隐藏 EchoDock” (Hide EchoDock), not “显示 EchoDock” (Show EchoDock). Then check that the current display is enabled under Settings → Displays. With Auto Hide enabled, keep the pointer at the bottom-center area. A shared internal display edge may also require the configured dwell time.
+The menu bar should offer “Hide EchoDock”, not “Show EchoDock”. Then check that the current display is enabled under Settings → Displays. With Auto Hide enabled, keep the pointer at the bottom-center area. A shared internal display edge may also require the configured dwell time.
 
 </details>
 
 <details>
 <summary><strong>The app list did not change after editing the system Dock</strong></summary>
 
-Choose “立即刷新” (Refresh Now) from the menu bar. If the system Dock preferences are temporarily unavailable, EchoDock keeps using the last valid list and reports the cached state in the menu.
+Choose “Refresh Now” from the menu bar. If the system Dock preferences are temporarily unavailable, EchoDock keeps using the last valid list and reports the cached state in the menu.
 
 </details>
 
@@ -425,18 +425,16 @@ EchoDock is an overlay and does not reserve desktop work area for other windows.
 
 ---
 
-## Build and technical notes · 构建与技术说明
+## Build and technical notes
 
 EchoDock is a native AppKit menu bar app. It uses public macOS facilities including `NSWorkspace`, visual-effect materials, and the Accessibility API. The core app list is read from the local system Dock preferences; EchoDock does not inject code into system processes.
 
-EchoDock 是原生 AppKit 菜单栏应用，主要使用 `NSWorkspace`、系统视觉材质与辅助功能 API 等 macOS 能力。应用列表来自本机系统 Dock 偏好，不会向系统进程注入代码。
-
-- **Runtime / 运行环境:** macOS 13 Ventura or later / macOS 13 Ventura 或更高版本
-- **Source build / 源码构建:** Xcode 26 with the macOS 26 SDK / Xcode 26 与 macOS 26 SDK
-- **Current distribution / 当前发行状态:** development build without signing, notarization, or automatic updates / 尚未配置签名、公证与自动更新
+- **Runtime:** macOS 13 Ventura or later
+- **Source build:** Xcode 26 with the macOS 26 SDK
+- **Current distribution:** development build without signing, notarization, or automatic updates
 
 <details>
-<summary><strong>Build from source / 从源码构建</strong></summary>
+<summary><strong>Build from source</strong></summary>
 
 ```bash
 xcodebuild -quiet \
@@ -449,7 +447,7 @@ xcodebuild -quiet \
   build
 ```
 
-The generated app is located at / 构建产物位于：
+The generated app is located at:
 
 ```text
 .build/DerivedData/Build/Products/Debug/EchoDock.app
