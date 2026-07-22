@@ -1,6 +1,8 @@
 <div align="center">
 
-<img src="logo.png" alt="EchoDock logo" width="180" style="border-radius: 24px;">
+<div style="display: inline-block; overflow: hidden; border-radius: 24px; line-height: 0;">
+  <img src="logo.png" alt="EchoDock logo" width="180">
+</div>
 
 <h1>EchoDock</h1>
 
