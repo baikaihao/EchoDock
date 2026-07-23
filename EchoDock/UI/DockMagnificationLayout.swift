@@ -124,13 +124,17 @@ struct DockLaunchBounceTransition: Equatable {
     static let hopDurations: [TimeInterval] = [0.60, 0.40, 0.20]
     static let hopAmplitudeScales: [CGFloat] = [0.46, 0.27, 0.13]
     static let duration = hopDurations.reduce(0, +)
+    static let pauseBetweenCycles: TimeInterval = 0.32
+    static let cycleDuration = duration + pauseBetweenCycles
     static let maximumAmplitudeScale = hopAmplitudeScales.max() ?? 0
 
     let startTime: CFTimeInterval
 
     func offset(at time: CFTimeInterval, iconSize: CGFloat) -> CGFloat {
-        var elapsed = max(0, time - startTime)
-        guard elapsed < Self.duration else { return 0 }
+        let elapsedSinceStart = max(0, time - startTime)
+        let cycleElapsed = elapsedSinceStart.truncatingRemainder(dividingBy: Self.cycleDuration)
+        guard cycleElapsed < Self.duration else { return 0 }
+        var elapsed = cycleElapsed
 
         for (duration, amplitudeScale) in zip(
             Self.hopDurations,
@@ -147,7 +151,9 @@ struct DockLaunchBounceTransition: Equatable {
     }
 
     func isComplete(at time: CFTimeInterval) -> Bool {
-        time - startTime >= Self.duration
+        // The model removes this transition when the application leaves its
+        // launching state. Keeping it alive lets slow launches keep bouncing.
+        false
     }
 }
 

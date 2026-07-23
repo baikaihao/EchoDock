@@ -5,10 +5,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let preferences: PreferencesStore
     private let onOpenSettings: () -> Void
     private let onRefresh: () -> Void
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    private let statusItem = NSStatusBar.system.statusItem(
+        withLength: max(1, NSStatusBar.system.thickness - 2)
+    )
     private let menu = NSMenu()
     private var snapshot: DockSnapshot = .empty
     private var preferencesObserver: NSObjectProtocol?
+    private var aboutWindowController: AboutWindowController?
 
     init(
         preferences: PreferencesStore,
@@ -192,14 +195,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func showAbout() {
         NSApp.activate(ignoringOtherApps: true)
-        NSApp.orderFrontStandardAboutPanel(options: [
-            .applicationName: "EchoDock",
-            .version: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0",
-            .credits: NSAttributedString(
-                string: L10n.text("statusItem.aboutDescription"),
-                attributes: [.foregroundColor: NSColor.secondaryLabelColor]
-            )
-        ])
+        if aboutWindowController == nil {
+            aboutWindowController = AboutWindowController()
+        }
+        aboutWindowController?.present()
     }
 
     @objc private func quit() {

@@ -89,8 +89,6 @@ final class GeneralSettingsViewController: NSViewController {
         switch loginStatus {
         case .requiresApproval:
             loginItemStatus.stringValue = L10n.text("settings.general.login.requiresApproval")
-        case .notFound:
-            loginItemStatus.stringValue = L10n.text("settings.general.login.notSupported")
         default:
             loginItemStatus.stringValue = ""
         }

@@ -224,7 +224,8 @@ enum RunningApplicationURLDisambiguator {
 
 @MainActor
 final class DockModelController {
-    static let launchTimeout: TimeInterval = 8
+    static let launchTimeout: TimeInterval = 30
+    static let systemLaunchBounceTimeout: TimeInterval = 30
     static let failureDisplayDuration: TimeInterval = 5
     static let hideVerificationDelay: TimeInterval = 0.15
 
@@ -255,6 +256,8 @@ final class DockModelController {
     private var failureDismissalGenerations: [ApplicationIdentity: UInt64] = [:]
     private var systemLaunchPulseGeneration: UInt64 = 0
     private var systemLaunchPulseGenerations: [ApplicationIdentity: UInt64] = [:]
+    private var systemLaunchTimeoutWorkItems: [ApplicationIdentity: DispatchWorkItem] = [:]
+    private var launchCompletionGenerations: [ApplicationIdentity: UInt64] = [:]
     private var revision: UInt64 = 0
     private var preferencesObserver: NSObjectProtocol?
     private(set) var snapshot: DockSnapshot = .empty
@@ -302,7 +305,7 @@ final class DockModelController {
             self?.refreshDockItems()
         }
         runningMonitor.onChange = { [weak self] in
-            self?.publishIfNeeded()
+            self?.handleRunningApplicationChange()
         }
         runningMonitor.onApplicationWillLaunch = { [weak self] identity in
             self?.handleSystemApplicationWillLaunch(identity)
@@ -323,6 +326,9 @@ final class DockModelController {
     func stop() {
         launchTimeoutWorkItems.values.forEach { $0.cancel() }
         launchTimeoutWorkItems.removeAll()
+        systemLaunchTimeoutWorkItems.values.forEach { $0.cancel() }
+        systemLaunchTimeoutWorkItems.removeAll()
+        launchCompletionGenerations.removeAll()
         hideVerificationWorkItems.values.forEach { $0.cancel() }
         hideVerificationWorkItems.removeAll()
         hideVerificationGenerations.removeAll()
@@ -365,17 +371,21 @@ final class DockModelController {
         transientStateByIdentity[identity] = .launching
         publishIfNeeded()
 
-        // The view only needs one published normal -> launching edge. Its
-        // fixed bounce timeline keeps playing after the model returns to the
-        // normal state, just as it does for launches initiated by EchoDock.
-        DispatchQueue.main.async { [weak self] in
+        let timeoutWorkItem = DispatchWorkItem { [weak self] in
             guard let self,
                   self.systemLaunchPulseGenerations[identity] == generation else { return }
             self.systemLaunchPulseGenerations.removeValue(forKey: identity)
+            self.systemLaunchTimeoutWorkItems.removeValue(forKey: identity)
             guard self.transientStateByIdentity[identity] == .launching else { return }
             self.transientStateByIdentity.removeValue(forKey: identity)
             self.publishIfNeeded()
         }
+        systemLaunchTimeoutWorkItems[identity]?.cancel()
+        systemLaunchTimeoutWorkItems[identity] = timeoutWorkItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.systemLaunchBounceTimeout,
+            execute: timeoutWorkItem
+        )
     }
 
     static func shouldAnimateSystemLaunch(
@@ -603,6 +613,7 @@ final class DockModelController {
         guard transientStateByIdentity[identity] != .launching else { return }
         let generation = launchGenerationGate.begin(for: identity)
         launchTimeoutWorkItems[identity]?.cancel()
+        launchCompletionGenerations.removeValue(forKey: identity)
         transientStateByIdentity[identity] = .launching
         publishIfNeeded()
 
@@ -610,6 +621,7 @@ final class DockModelController {
             guard let self,
                   self.launchGenerationGate.isCurrent(generation, for: identity) else { return }
             self.launchTimeoutWorkItems.removeValue(forKey: identity)
+            self.launchCompletionGenerations.removeValue(forKey: identity)
             guard self.launchGenerationGate.invalidate(generation, for: identity) else { return }
             self.showTemporaryFailure(L10n.text("dock.error.launchTimeout"), identity: identity)
         }
@@ -640,16 +652,57 @@ final class DockModelController {
         error: Error?
     ) {
         guard launchGenerationGate.isCurrent(generation, for: identity) else { return }
-        launchTimeoutWorkItems.removeValue(forKey: identity)?.cancel()
-        guard launchGenerationGate.invalidate(generation, for: identity) else { return }
 
         if let error {
+            launchTimeoutWorkItems.removeValue(forKey: identity)?.cancel()
+            launchCompletionGenerations.removeValue(forKey: identity)
+            guard launchGenerationGate.invalidate(generation, for: identity) else { return }
             showTemporaryFailure(error.localizedDescription, identity: identity)
         } else {
-            transientStateByIdentity[identity] = .normal
+            // NSWorkspace can finish before the process has appeared in the
+            // running list. Keep the launch state until that is confirmed.
+            launchCompletionGenerations[identity] = generation
             runningMonitor.reconcile()
-            publishIfNeeded()
+            if runningMonitor.records.contains(where: { $0.identity == identity }) {
+                completeLaunch(for: identity, generation: generation)
+            }
         }
+    }
+
+    private func handleRunningApplicationChange() {
+        let runningIdentities = Set(runningMonitor.records.map(\.identity))
+
+        for identity in Array(systemLaunchPulseGenerations.keys)
+        where runningIdentities.contains(identity) {
+            systemLaunchPulseGenerations.removeValue(forKey: identity)
+            systemLaunchTimeoutWorkItems.removeValue(forKey: identity)?.cancel()
+            if transientStateByIdentity[identity] == .launching {
+                transientStateByIdentity.removeValue(forKey: identity)
+            }
+        }
+
+        let completedLaunches = launchCompletionGenerations.compactMap {
+            identity, generation in
+            runningIdentities.contains(identity) ? (identity, generation) : nil
+        }
+        for (identity, generation) in completedLaunches {
+            completeLaunch(for: identity, generation: generation)
+        }
+        publishIfNeeded()
+    }
+
+    private func completeLaunch(
+        for identity: ApplicationIdentity,
+        generation: UInt64
+    ) {
+        guard launchGenerationGate.isCurrent(generation, for: identity) else { return }
+        launchCompletionGenerations.removeValue(forKey: identity)
+        launchTimeoutWorkItems.removeValue(forKey: identity)?.cancel()
+        guard launchGenerationGate.invalidate(generation, for: identity) else { return }
+        if transientStateByIdentity[identity] == .launching {
+            transientStateByIdentity.removeValue(forKey: identity)
+        }
+        publishIfNeeded()
     }
 
     private func showTemporaryFailure(_ message: String, identity: ApplicationIdentity) {

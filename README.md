@@ -1,7 +1,7 @@
 <div align="center">
 
 <div style="display: inline-block; overflow: hidden; border-radius: 24px; line-height: 0;">
-  <img src="logo.png" alt="EchoDock logo" width="180">
+  <img src="pics/logo.png" alt="EchoDock logo" width="180">
 </div>
 
 <h1>EchoDock</h1>
@@ -26,6 +26,18 @@
 </div>
 
 ---
+
+## 预览 / Screenshots
+
+<p align="center">
+  <img src="pics/pic.png" alt="EchoDock in use across multiple displays" width="1000">
+</p>
+<p align="center"><em>使用场景 / EchoDock in use across multiple displays</em></p>
+
+<p align="center">
+  <img src="pics/pic2.png" alt="EchoDock display settings" width="420">
+</p>
+<p align="center"><em>设置界面 / EchoDock display settings</em></p>
 
 ## 中文
 
@@ -65,7 +77,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 
 #### 启动与切换应用
 
-- 点击尚未运行的应用，EchoDock 会启动它；“启动弹跳”开启时会播放一次完整的弹跳动画。
+- 点击尚未运行的应用，EchoDock 会启动它；“启动弹跳”开启时会持续弹跳，直到应用进入运行状态。
 - 点击正在运行的应用，EchoDock 会取消隐藏该应用并将它切换到前台。
 - “运行指示灯”开启时，图标下方的指示点表示应用正在运行。
 - 应用列表过宽时，可在 EchoDock 上使用触控板或鼠标滚轮横向浏览。
@@ -265,7 +277,7 @@ By default, EchoDock is enabled on every available display, stays visible, and i
 
 #### Launching and switching apps
 
-- Click an app that is not running to launch it. When Launch Bounce is enabled, EchoDock plays one complete bounce sequence.
+- Click an app that is not running to launch it. When Launch Bounce is enabled, EchoDock keeps bouncing until the application is running.
 - Click a running app to unhide it and bring it forward.
 - When Running Indicators is enabled, the indicator below an icon means the app is currently running.
 - If the app list is wider than the display, use a trackpad or mouse wheel over EchoDock to scroll horizontally.

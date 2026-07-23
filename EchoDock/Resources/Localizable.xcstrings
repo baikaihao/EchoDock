@@ -1,6 +1,40 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "about.buildFormat" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Build %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Build %@"
+          }
+        }
+      }
+    },
+    "about.versionFormat" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Version %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "版本 %@"
+          }
+        }
+      }
+    },
     "accessibility.granted" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -126,13 +160,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "App launch timed out (8 seconds)"
+            "value" : "App launch timed out (30 seconds)"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "启动应用超时（8 秒）"
+            "value" : "启动应用超时（30 秒）"
           }
         }
       }
@@ -1514,23 +1548,6 @@
         }
       }
     },
-    "settings.general.login.notSupported" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Launch at login is unavailable in this build"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "当前构建不支持登录启动"
-          }
-        }
-      }
-    },
     "settings.general.login.requiresApproval" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1696,7 +1713,7 @@
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "原生多显示器应用启动坞"
+            "value" : "类原生多显示器应用启动坞"
           }
         }
       }

@@ -812,17 +812,30 @@ private final class DockStripView: NSView {
             at: now
         )
 
-        if launchBounceAnimationsEnabled,
-           !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            for item in items where item.transientState == .launching {
-                guard let previousState = previousStateByIdentity[item.identity],
-                      previousState != .launching,
-                      launchBounceTransitions[item.identity] == nil else { continue }
-                launchBounceTransitions[item.identity] = DockLaunchBounceTransition(
-                    startTime: now
-                )
-                launchBounceOffsets[item.identity] = 0
+        let launchingIdentities: Set<ApplicationIdentity> = {
+            guard launchBounceAnimationsEnabled,
+                  !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
+                return []
             }
+            return Set(
+                items
+                    .filter { $0.transientState == .launching }
+                    .map(\.identity)
+            )
+        }()
+        for item in items where launchingIdentities.contains(item.identity) {
+            guard let previousState = previousStateByIdentity[item.identity],
+                  previousState != .launching,
+                  launchBounceTransitions[item.identity] == nil else { continue }
+            launchBounceTransitions[item.identity] = DockLaunchBounceTransition(
+                startTime: now
+            )
+            launchBounceOffsets[item.identity] = 0
+        }
+        for identity in Array(launchBounceTransitions.keys)
+        where !launchingIdentities.contains(identity) {
+            launchBounceTransitions.removeValue(forKey: identity)
+            launchBounceOffsets.removeValue(forKey: identity)
         }
 
         itemPresenceTransitions = itemPresenceTransitions.filter {
