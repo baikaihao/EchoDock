@@ -11,7 +11,8 @@ enum DockSnapshotBuilder {
         pinnedApplications: [PinnedApplication],
         runningApplications: [RunningApplicationRecord],
         showRunningApplications: Bool,
-        transientStates: [ApplicationIdentity: DockItemTransientState]
+        transientStates: [ApplicationIdentity: DockItemTransientState],
+        fileShortcuts: [ResolvedDockFileShortcut] = []
     ) -> DockSnapshotBuildResult {
         var runningByIdentity: [ApplicationIdentity: RunningApplicationRecord] = [:]
         for running in runningApplications.sorted(by: { $0.stableOrder < $1.stableOrder }) {
@@ -51,6 +52,7 @@ enum DockSnapshotBuilder {
                     applicationURL: running.applicationURL,
                     displayName: running.displayName,
                     section: .running,
+                    kind: .application,
                     isRunning: true,
                     isActive: running.isActive,
                     isHidden: running.isHidden,
@@ -58,6 +60,40 @@ enum DockSnapshotBuilder {
                 ))
             }
         }
+
+        for shortcut in fileShortcuts {
+            items.append(DockItem(
+                identity: ApplicationIdentity(rawValue: "file:\(shortcut.id.uuidString)"),
+                bundleIdentifier: nil,
+                applicationURL: shortcut.url,
+                displayName: shortcut.displayName,
+                section: .files,
+                kind: .fileShortcut(
+                    id: shortcut.id,
+                    isDirectory: shortcut.isDirectory,
+                    isAvailable: shortcut.isAvailable
+                ),
+                isRunning: false,
+                isActive: false,
+                isHidden: false,
+                transientState: .normal
+            ))
+        }
+
+        let trashIdentity = ApplicationIdentity(rawValue: "system:trash")
+        items.append(DockItem(
+            identity: trashIdentity,
+            bundleIdentifier: nil,
+            applicationURL: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".Trash", isDirectory: true),
+            displayName: L10n.text("dock.trash"),
+            section: .files,
+            kind: .trash,
+            isRunning: false,
+            isActive: false,
+            isHidden: false,
+            transientState: transientStates[trashIdentity] ?? .normal
+        ))
 
         return DockSnapshotBuildResult(
             items: items,
@@ -76,6 +112,7 @@ enum DockSnapshotBuilder {
             applicationURL: pinned.applicationURL,
             displayName: pinned.displayName,
             section: .pinned,
+            kind: .application,
             isRunning: running != nil,
             isActive: running?.isActive ?? false,
             isHidden: running?.isHidden ?? false,

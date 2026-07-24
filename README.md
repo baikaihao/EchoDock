@@ -56,7 +56,8 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 | 多屏程序坞 | 为每块在线、非镜像从属显示器独立启用或关闭 EchoDock，并响应显示器连接、断开和重新排列。 |
 | 单向同步系统 Dock | 自动读取系统 Dock 的固定应用与顺序，并从本机应用包加载本地化名称和图标；系统 Dock 发生增删或排序后会自动刷新，读取失败时使用上一次有效列表。 |
 | 运行中的应用 | 可在分隔线后显示“正在运行但未固定”的普通应用；所有已启用屏幕共享同一应用列表。 |
-| 原生感交互 | 支持可选的底部热区与自动隐藏、完整应用名称提示、连续范围放大、相邻图标位移、Dock 宽度伸缩和横向滚动。 |
+| 第三栏与废纸篓 | 将文件或文件夹拖入 EchoDock，保存为可排序的本地快捷方式；内置废纸篓支持系统级移入废纸篓、仅移除快捷方式以及 `⌘Z` 撤销。 |
+| 原生感交互 | 支持可选的底部热区与自动隐藏、完整名称提示、鼠标与文件拖拽下的连续范围放大、相邻图标位移、Dock 宽度伸缩和横向滚动。 |
 | 动画反馈 | 可选的应用启动弹跳与运行指示灯；未固定的运行中应用进入或退出时平滑缩放和渐显、渐隐。 |
 | 应用操作 | 左键启动或切换应用；右键可打开应用、显示窗口、关闭窗口、隐藏/显示、退出，以及在 Finder 中定位。 |
 | 外观调整 | 调整图标大小、图标间距、背景透明度、放大倍率、影响范围和名称框距离，并独立开关启动弹跳与运行指示灯；macOS 26 及以上可切换经典与液态玻璃风格。 |
@@ -70,6 +71,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 3. 打开“显示器”页面，为需要使用 EchoDock 的屏幕勾选 EchoDock。
 4. EchoDock 默认常驻在已启用屏幕的底部；如需鼠标触边时才显示，可在“通用”中开启“自动隐藏”。
 5. 左键点击图标启动或切换应用；右键点击图标使用更多操作。
+6. 将 Finder 中的文件或文件夹拖到废纸篓左侧，即可加入第三栏。
 
 默认情况下，EchoDock 会启用所有可用屏幕、保持显示，并显示运行中但未固定的应用；启动弹跳与运行指示灯也默认开启。你可以在“通用”中自行开启自动隐藏，或从菜单栏选择“隐藏 EchoDock”，临时隐藏所有面板而不退出后台同步。
 
@@ -82,10 +84,18 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 - “运行指示灯”开启时，图标下方的指示点表示应用正在运行。
 - 应用列表过宽时，可在 EchoDock 上使用触控板或鼠标滚轮横向浏览。
 
+#### 第三栏与废纸篓
+
+- EchoDock 末端的第三栏默认包含废纸篓。将 Finder 中的文件或文件夹拖到废纸篓左侧，可以把它们作为本地快捷方式加入第三栏。
+- 在第三栏中拖动项目可以调整顺序；点击项目会打开原文件，右键可以在 Finder 中显示或从 EchoDock 移除。
+- 将 Finder 中的文件或文件夹拖到废纸篓，会通过 macOS 将原项目移入系统废纸篓。
+- 将第三栏项目拖到废纸篓只会从 EchoDock 移除快捷方式，原文件不会被删除。
+- 授予辅助功能权限后，可按 `⌘Z` 撤销最近一次由 EchoDock 完成的移入废纸篓或快捷方式移除操作。
+
 #### 悬停放大与名称提示
 
-- 鼠标在图标之间移动时，指针附近的一组图标会连续放大并产生轻微位移，Dock 会随之平滑伸缩。
-- 名称框显示应用的完整本地化名称，并跟随当前悬停图标。
+- 鼠标或拖拽中的文件在图标之间移动时，附近的一组图标会连续放大并产生轻微位移，Dock 会随之平滑伸缩。
+- 名称框显示项目的完整本地化名称，并跟随当前图标；判定范围覆盖图标槽位的整个 Dock 高度，从顶部、底部或侧面进入时都能稳定触发。
 - 指针离开图标后，名称框会以稍长且平滑的渐隐收尾，不会突兀消失或残留。
 - 可在“设置 → 外观”关闭放大效果，或调整放大倍率、影响范围与名称框距离。
 - 开启 macOS 的“减少动态效果”“降低透明度”或“增强对比度”后，EchoDock 会采用相应的辅助显示行为。
@@ -97,8 +107,12 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 | 应用未运行 | 在 Finder 中显示、打开。 |
 | 应用正在运行 | 在 Finder 中显示、显示所有窗口、关闭窗口、隐藏/显示、退出。 |
 | Finder | 提供窗口与隐藏/显示操作，但不提供“退出”。 |
+| 文件或文件夹快捷方式 | 在 Finder 中显示、打开、从 EchoDock 移除。 |
+| 废纸篓 | 打开。 |
 
 “显示所有窗口”会激活该应用及其窗口，并不等同于原生 Dock 的 App Exposé。“关闭窗口”只关闭一个当前可关闭的窗口，不会向应用发送退出或强制退出命令。
+
+在 EchoDock 空白处右键，可以直接打开设置、关于窗口或退出 EchoDock。
 
 ### 设置指南
 
@@ -143,15 +157,18 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 
 ### 辅助功能权限
 
-基本的多屏显示、Dock 列表同步、启动/切换应用、隐藏应用和退出应用都不需要辅助功能权限，也不需要屏幕录制或自动化权限。
+基本的多屏显示、Dock 列表同步、启动/切换应用、第三栏快捷方式以及将拖入的项目移到系统废纸篓，都不需要辅助功能权限，也不需要屏幕录制或自动化权限。
 
 以下功能需要辅助功能权限：
 
 - 检测原生 Dock 当前实际位于哪块显示器；
 - 尝试迁移并固定原生 Dock；
-- 通过右键菜单关闭其他应用的窗口。
+- 通过右键菜单关闭其他应用的窗口；
+- 全局捕获 `⌘Z`，撤销最近一次由 EchoDock 完成的废纸篓操作或快捷方式移除。
 
 前往“设置 → 通用 → 辅助功能权限”，点击“申请辅助功能权限”，再在“系统设置 → 隐私与安全性 → 辅助功能”中允许 EchoDock。授权后重新打开设置页或右键菜单，状态会自动更新。
+
+升级后首次运行带有第三栏功能的版本时，EchoDock 也会显示一次权限说明。跳过授权不影响添加、打开、排序或移除第三栏项目，也不影响把文件移到废纸篓；仅全局 `⌘Z` 撤销不可用。
 
 “关闭窗口”只有在 EchoDock 已获得辅助功能权限，且目标应用确实存在可关闭窗口时才会启用。未授权时，该选项会置灰并显示“需要辅助功能权限”。
 
@@ -176,7 +193,7 @@ EchoDock 会尝试把原生 Dock 引导到目标显示器，并阻止其他屏�
 
 - 不需要账号，不包含遥测，也不主动联网。
 - 不采集用户内容、操作记录或屏幕图像。
-- 系统 Dock 列表、应用运行状态、显示器信息、偏好设置和最后一次有效缓存均只在本机读取或保存。
+- 系统 Dock 列表、应用运行状态、显示器信息、第三栏快捷方式、偏好设置和最后一次有效缓存均只在本机读取或保存。
 - 获得辅助功能权限后，只读取实现上述功能所需的 Dock 几何信息和窗口状态，不读取文稿内容。
 
 ### 当前边界
@@ -185,13 +202,13 @@ EchoDock 当前专注于“在多个屏幕快速启动和切换应用”，并�
 
 - 在 EchoDock 内固定、取消固定或重新排列应用；请在系统 Dock 中操作，EchoDock 会单向同步结果；
 - 通知角标、下载进度、第三方自定义 Dock Tile；
-- 文件夹、废纸篓、最近使用项目、最小化窗口与窗口缩略图；
+- 最近使用项目、文件夹堆栈、最小化窗口与窗口缩略图；第三栏只保存单个文件或文件夹的快捷方式；
 - 每块显示器使用不同的应用列表；
 - 左侧、右侧或顶部布局；
 - 原生 App Exposé；
 - 正式签名与公证安装包、自动更新。
 
-当前界面为简体中文。双屏、三屏、全屏、睡眠恢复、显示器热插拔和权限撤销等组合场景仍需在对应的真实硬件环境中验证。
+当前界面提供简体中文和英文。双屏、三屏、全屏、睡眠恢复、显示器热插拔和权限撤销等组合场景仍需在对应的真实硬件环境中验证。
 
 ### 常见问题
 
@@ -256,7 +273,8 @@ EchoDock adds an independent, interactive app dock to the bottom of each display
 | A Dock on every display | Enable or disable EchoDock independently on each online display that is not a secondary mirror. Display connections, disconnections, and rearrangements are detected automatically. |
 | One-way system Dock sync | Reads pinned apps and order from the system Dock, then loads localized names and icons from local app bundles. Changes are refreshed automatically, with the last valid list used as a fallback when the preferences are temporarily unavailable. |
 | Running apps | Optionally shows regular apps that are running but not pinned, separated from pinned apps by a divider. Every enabled display shares the same list. |
-| Native-feeling interaction | Includes optional bottom-edge reveal and auto-hide, full app-name labels, continuous neighborhood magnification, icon displacement, Dock width expansion, and horizontal scrolling. |
+| File shortcuts and Trash | Drag files or folders into EchoDock to keep sortable local shortcuts. The built-in Trash supports system recycling, shortcut-only removal, and `⌘Z` undo. |
+| Native-feeling interaction | Includes optional bottom-edge reveal and auto-hide, full item-name labels, continuous neighborhood magnification for both pointer and file drags, icon displacement, Dock width expansion, and horizontal scrolling. |
 | Motion feedback | Offers optional launch bounces and running indicators, and smoothly scales/fades unpinned running apps in and out. |
 | App controls | Left-click to launch or switch. Right-click to open, reveal windows, close a window, hide/show, quit, or locate the app in Finder. |
 | Appearance controls | Adjust icon size, spacing, background transparency, magnification scale and range, and label distance, with separate launch-bounce and running-indicator switches. macOS 26 and later can switch between Classic and Liquid Glass. |
@@ -270,6 +288,7 @@ EchoDock adds an independent, interactive app dock to the bottom of each display
 3. Open the “Displays” page and enable EchoDock for the displays where you want to use it.
 4. EchoDock stays visible at the bottom of enabled displays by default. To reveal it only at the screen edge, turn on “Auto Hide” under General.
 5. Left-click an icon to launch or switch apps. Right-click for additional actions.
+6. Drag files or folders from Finder to the area left of Trash to add them to the third section.
 
 By default, EchoDock is enabled on every available display, stays visible, and includes running apps that are not pinned. Launch bounces and running indicators are also enabled by default. You can turn on Auto Hide under General, or choose “Hide EchoDock” from the menu bar to hide all panels temporarily while keeping synchronization running.
 
@@ -282,10 +301,18 @@ By default, EchoDock is enabled on every available display, stays visible, and i
 - When Running Indicators is enabled, the indicator below an icon means the app is currently running.
 - If the app list is wider than the display, use a trackpad or mouse wheel over EchoDock to scroll horizontally.
 
+#### File shortcuts and Trash
+
+- The third section at the end of EchoDock always contains Trash. Drag files or folders from Finder to the area left of Trash to keep them as local shortcuts.
+- Drag shortcuts within the third section to reorder them. Click to open the original item, or right-click to reveal it in Finder or remove it from EchoDock.
+- Dropping files or folders from Finder onto Trash moves the original items to the macOS Trash.
+- Dropping a third-section shortcut onto Trash only removes it from EchoDock; the original file remains untouched.
+- After granting Accessibility permission, press `⌘Z` to undo the most recent Trash or shortcut-removal operation performed by EchoDock.
+
 #### Magnification and app-name labels
 
-- As the pointer moves between icons, a neighborhood of nearby icons continuously magnifies and shifts while the Dock smoothly changes width.
-- The label shows the app's full localized display name and follows the currently hovered icon.
+- As the pointer or a dragged file moves between icons, a neighborhood of nearby icons continuously magnifies and shifts while the Dock smoothly changes width.
+- The label shows the item's full localized display name and follows the active icon. Its hit area spans the full Dock height for each icon slot, so entry from the top, bottom, or side remains reliable.
 - After the pointer leaves an icon, the label finishes with a slightly longer, smooth fade instead of disappearing abruptly or lingering.
 - Open Settings → Appearance to disable magnification or adjust its scale, influence range, and label distance.
 - EchoDock responds to the macOS Reduce Motion, Reduce Transparency, and Increase Contrast accessibility settings.
@@ -297,8 +324,12 @@ By default, EchoDock is enabled on every available display, stays visible, and i
 | Not running | Show in Finder, Open. |
 | Running | Show in Finder, Show All Windows, Close Window, Hide/Show, Quit. |
 | Finder | Window and Hide/Show actions are available, but Quit is intentionally omitted. |
+| File or folder shortcut | Show in Finder, Open, Remove from EchoDock. |
+| Trash | Open. |
 
 “Show All Windows” activates the app and its windows; it is not the system Dock's App Exposé. “Close Window” presses the close control of one eligible window. It does not send Quit or Force Quit to the app.
+
+Right-click empty space in EchoDock to open Settings or About, or to quit EchoDock.
 
 ### Settings reference
 
@@ -343,15 +374,18 @@ The display map and list distinguish the system Dock's detected location from th
 
 ### Accessibility permission
 
-The core multi-display Dock, app-list synchronization, launching/switching, hiding, and quitting do not require Accessibility permission. EchoDock does not require Screen Recording or Automation permission.
+The core multi-display Dock, app-list synchronization, launching/switching, third-section shortcuts, and moving dragged items to the macOS Trash do not require Accessibility permission. EchoDock does not require Screen Recording or Automation permission.
 
 Accessibility permission is required to:
 
 - detect which display actually contains the system Dock;
 - relocate and protect the system Dock in fixed mode;
-- close another app's window from the context menu.
+- close another app's window from the context menu;
+- capture `⌘Z` globally to undo the latest Trash or shortcut-removal operation performed by EchoDock.
 
 Open Settings → General → Accessibility Permission, click “Request Accessibility Permission”, then allow EchoDock under System Settings → Privacy & Security → Accessibility. Reopen the Settings page or context menu after granting permission; the status updates automatically.
+
+The first launch after upgrading to a version with the third section also presents this permission explanation once. Skipping permission does not affect adding, opening, reordering, or removing shortcuts, and it does not prevent files from being moved to Trash; only global `⌘Z` undo remains unavailable.
 
 “Close Window” is enabled only when EchoDock has Accessibility permission and the target app has an eligible window. Without permission, the item is disabled and displays “Accessibility Permission Required”.
 
@@ -376,7 +410,7 @@ Before using this mode, note that:
 
 - No account is required. EchoDock contains no telemetry and does not initiate network connections.
 - It does not collect user content, interaction history, or screen images.
-- The system Dock list, app state, display information, preferences, and last valid cache are read or stored locally only.
+- The system Dock list, app state, display information, third-section shortcuts, preferences, and last valid cache are read or stored locally only.
 - With Accessibility permission, EchoDock reads only the Dock geometry and window state needed for the features above, not document contents.
 
 ### Current limitations
@@ -385,13 +419,13 @@ EchoDock currently focuses on fast app launching and switching across displays. 
 
 - pinning, unpinning, or reordering inside EchoDock; make those changes in the system Dock and EchoDock will sync them one way;
 - notification badges, download progress, or custom third-party Dock Tiles;
-- folders, Trash, recent items, minimized windows, or window thumbnails;
+- recent items, folder stacks, minimized windows, or window thumbnails; the third section stores individual file or folder shortcuts only;
 - a different app list for each display;
 - left, right, or top-edge layouts;
 - native App Exposé;
 - a signed/notarized distribution package or automatic updates.
 
-The current application UI is in Simplified Chinese. Dual-display, triple-display, full-screen, sleep/wake, hot-plug, and permission-revocation combinations still require validation on the corresponding physical hardware.
+The interface is available in Simplified Chinese and English. Dual-display, triple-display, full-screen, sleep/wake, hot-plug, and permission-revocation combinations still require validation on the corresponding physical hardware.
 
 ### Troubleshooting
 

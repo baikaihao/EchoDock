@@ -103,6 +103,23 @@
         }
       }
     },
+    "common.ok" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "OK"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "好"
+          }
+        }
+      }
+    },
     "dock.action.failed" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -116,6 +133,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "操作失败"
+          }
+        }
+      }
+    },
+    "dock.drop.removeFromEchoDock" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove from EchoDock"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "从EchoDock中移除"
           }
         }
       }
@@ -256,6 +290,23 @@
         }
       }
     },
+    "dock.error.unableTrash" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to move the item to Trash"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法将项目移到废纸篓"
+          }
+        }
+      }
+    },
     "dock.error.unableShow" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -392,6 +443,23 @@
         }
       }
     },
+    "dock.menu.removeShortcut" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Remove Shortcut"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "移除快捷方式"
+          }
+        }
+      }
+    },
     "dock.menu.revealInFinder" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -456,6 +524,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "尚未同步"
+          }
+        }
+      }
+    },
+    "dock.trash" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Trash"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "废纸篓"
           }
         }
       }
@@ -541,6 +626,74 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "%.1f 秒"
+          }
+        }
+      }
+    },
+    "permissions.thirdSection.authorize" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Enable Accessibility Access"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "授权辅助功能"
+          }
+        }
+      }
+    },
+    "permissions.thirdSection.later" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Later"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "稍后"
+          }
+        }
+      }
+    },
+    "permissions.thirdSection.message" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The third section stores shortcuts for files you drag into EchoDock. Accessibility access is only required for global Command-Z Trash undo; the third section itself works without it."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "第三栏会保存你拖入 EchoDock 的文件快捷方式。只有使用全局 Command-Z 撤销废纸篓操作时才需要辅助功能权限，不授权也不影响第三栏本身。"
+          }
+        }
+      }
+    },
+    "permissions.thirdSection.title" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Permission for Trash Undo"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "废纸篓撤销需要权限"
           }
         }
       }

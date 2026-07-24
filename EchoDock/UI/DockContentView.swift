@@ -29,6 +29,8 @@ final class DockContentView: NSView {
     var onPreferredSizeChange: ((NSSize) -> Void)?
     var onPointerInteractionChange: ((Bool) -> Void)?
     var onLaunchBounceActivityChange: ((Bool) -> Void)?
+    var onFileDragActivityChange: ((Bool) -> Void)?
+    var onDropRequest: ((DockDropRequest) -> Bool)?
 
     private let backgroundView = DockBackgroundSurfaceView()
     private let scrollView = HorizontalDockScrollView()
@@ -52,6 +54,22 @@ final class DockContentView: NSView {
     private var isMagnificationHeadroomActive = false
     private var isLaunchBounceActive = false
     private var backgroundInteraction = DockBackgroundInteractionState.idle
+    private var snapshot: DockSnapshot = .empty
+    private var dropDestination: DockDropDestination?
+    private var dropPlaceholderShortcutIndex: Int?
+    private var cachedDraggingPayload: DraggingPayload?
+    private var preparedDraggingPayload: DraggingPayload?
+    private var preparedDropDestination: DockDropDestination?
+    private var activeDraggingSequenceNumber: Int?
+    private var dragExitRevision: UInt = 0
+    private var draggedShortcutIDs = Set<UUID>()
+    private var isDraggedShortcutRemovedFromPresentation = false
+    private var pendingShortcutDropHandoff: ShortcutDropHandoff?
+    private var pendingShortcutRemovalHandoff: ShortcutRemovalHandoff?
+    private var isFileDragActive = false
+    private var fileDragLockedSize: NSSize?
+    private var launchBounceAnimationsEnabled = false
+    private var runningIndicatorsEnabled = true
 
     init(iconProvider: ApplicationIconProvider = .shared) {
         self.iconProvider = iconProvider
@@ -78,6 +96,12 @@ final class DockContentView: NSView {
         scrollView.clipsToBounds = false
         scrollView.contentView.clipsToBounds = false
         scrollView.documentView = stripView
+        scrollView.onBackgroundContextMenu = { [weak self] event in
+            self?.presentBackgroundContextMenu(for: event)
+        }
+        stripView.onBackgroundContextMenu = { [weak self] event in
+            self?.presentBackgroundContextMenu(for: event)
+        }
         scrollView.onScroll = { [weak stripView] event in
             stripView?.refreshPointer(with: event)
         }
@@ -131,6 +155,7 @@ final class DockContentView: NSView {
         launchBounceAnimationsEnabled: Bool = false,
         runningIndicatorsEnabled: Bool = true
     ) {
+        var effectiveAnimatedRemovalIdentities = animatedRemovalIdentities
         let wasLaunchBounceActive = isLaunchBounceActive
         self.iconSize = iconSize
         self.maxWidth = max(160, maxWidth)
@@ -143,6 +168,34 @@ final class DockContentView: NSView {
         self.magnificationRange = min(3.50, max(1.25, magnificationRange))
         self.iconSpacing = min(28, max(4, iconSpacing))
         self.tooltipGap = min(24, max(0, tooltipGap))
+        if let handoff = pendingShortcutDropHandoff {
+            let incomingShortcutIDs = snapshot.items.compactMap(\.kind.shortcutID)
+            if snapshot.revision > handoff.baselineRevision,
+               incomingShortcutIDs != handoff.baselineShortcutIDs {
+                pendingShortcutDropHandoff = nil
+                dropPlaceholderShortcutIndex = nil
+                draggedShortcutIDs.removeAll()
+                isDraggedShortcutRemovedFromPresentation = false
+            }
+        }
+        if let handoff = pendingShortcutRemovalHandoff {
+            let incomingShortcutIDs = Set(snapshot.items.compactMap(\.kind.shortcutID))
+            if snapshot.revision > handoff.baselineRevision,
+               incomingShortcutIDs.isDisjoint(with: handoff.shortcutIDs) {
+                pendingShortcutRemovalHandoff = nil
+                if dropPlaceholderShortcutIndex != nil {
+                    effectiveAnimatedRemovalIdentities.insert(
+                        Self.dropPlaceholderItem.identity
+                    )
+                }
+                dropPlaceholderShortcutIndex = nil
+                draggedShortcutIDs.removeAll()
+                isDraggedShortcutRemovedFromPresentation = false
+            }
+        }
+        self.snapshot = snapshot
+        self.launchBounceAnimationsEnabled = launchBounceAnimationsEnabled
+        self.runningIndicatorsEnabled = runningIndicatorsEnabled
         updateBackgroundAppearance()
         // Leave enough headroom for the magnified icon while preserving a
         // compact native-Dock-like baseline.
@@ -158,47 +211,112 @@ final class DockContentView: NSView {
             isMagnificationHeadroomActive = false
         }
 
-        stripView.apply(
-            items: snapshot.items,
-            pinnedItemCount: snapshot.pinnedItemCount,
-            iconSize: iconSize,
-            iconProvider: iconProvider,
-            onAction: { [weak self] item in self?.onItemAction?(item) },
-            onContextAction: { [weak self] item, action in
-                self?.onItemContextAction?(item, action)
-            },
-            contextMenuStateProvider: { [weak self] item in
-                self?.onItemContextMenuStateRequest?(item) ?? .unavailable
-            },
-            onContextMenuPresentationChange: { [weak self] presented in
-                if presented {
-                    self?.onTooltipPresentation?(nil)
-                }
-                self?.onContextMenuPresentationChange?(presented)
-            },
-            onHover: { [weak self] button, item in self?.updateTooltip(button: button, item: item) },
-            magnificationEnabled: self.magnificationEnabled,
-            magnificationScale: self.magnificationScale,
-            magnificationRange: self.magnificationRange,
-            iconSpacing: self.iconSpacing,
+        applyStrip(
             animatedInsertionIdentities: animatedInsertionIdentities,
-            animatedRemovalIdentities: animatedRemovalIdentities,
-            launchBounceAnimationsEnabled: launchBounceAnimationsEnabled,
-            runningIndicatorsEnabled: runningIndicatorsEnabled
+            animatedRemovalIdentities: effectiveAnimatedRemovalIdentities
         )
 
         isLaunchBounceActive = stripView.isLaunchBounceAnimationActive
         preferredWidth = targetPreferredWidth
         preferredHeight = targetPreferredHeight
-        frame.size = NSSize(
-            width: preferredWidth,
-            height: preferredHeight
-        )
+        frame.size = fileDragLockedSize
+            ?? NSSize(width: preferredWidth, height: preferredHeight)
         needsLayout = true
         layoutSubtreeIfNeeded()
         if isLaunchBounceActive != wasLaunchBounceActive {
             onLaunchBounceActivityChange?(isLaunchBounceActive)
         }
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        return beginFileDrag(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        updateFileDrag(sender)
+    }
+
+    override func wantsPeriodicDraggingUpdates() -> Bool {
+        false
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        scheduleFileDragExit(for: sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        dragExitRevision &+= 1
+        preparedDraggingPayload = nil
+        preparedDropDestination = nil
+        guard let destination = dropDestination else {
+            return false
+        }
+        let finalPayload = mergedDraggingPayload(
+            preferred: draggingPayload(from: sender),
+            fallback: cachedDraggingPayload
+        )
+        cachedDraggingPayload = finalPayload
+        guard finalPayload != nil else { return false }
+        let acceptsDrop = dragOperation(
+            for: destination,
+            sourceMask: sender.draggingSourceOperationMask
+        ) != []
+        guard acceptsDrop else {
+            setDropDestination(nil)
+            return false
+        }
+        preparedDraggingPayload = finalPayload
+        preparedDropDestination = destination
+        setDropDestination(destination)
+        return acceptsDrop
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let payload = preparedDraggingPayload,
+              let destination = preparedDropDestination,
+              let onDropRequest else {
+            clearFileDrag()
+            return false
+        }
+        let request = DockDropRequest(
+            fileURLs: payload.fileURLs,
+            sourceShortcutIDs: payload.sourceShortcutIDs,
+            destination: requestDestination(
+                destination,
+                sourceShortcutIDs: payload.sourceShortcutIDs
+            )
+        )
+        if case .shortcuts = request.destination {
+            pendingShortcutDropHandoff = ShortcutDropHandoff(
+                baselineRevision: snapshot.revision,
+                baselineShortcutIDs: snapshot.items.compactMap(\.kind.shortcutID)
+            )
+        } else if case .trash = request.destination,
+                  !payload.sourceShortcutIDs.isEmpty {
+            pendingShortcutRemovalHandoff = ShortcutRemovalHandoff(
+                baselineRevision: snapshot.revision,
+                shortcutIDs: Set(payload.sourceShortcutIDs)
+            )
+        }
+        let accepted = onDropRequest(request)
+        if !accepted {
+            pendingShortcutDropHandoff = nil
+            pendingShortcutRemovalHandoff = nil
+        }
+        clearFileDrag()
+        return accepted
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        presentBackgroundContextMenu(for: event)
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        clearFileDrag()
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        clearFileDrag()
     }
 
     override func layout() {
@@ -215,6 +333,13 @@ final class DockContentView: NSView {
             width: max(stripView.requiredWidth, scrollView.contentSize.width),
             height: stripHeight
         )
+        let dockBodyFrame = NSRect(
+            x: 0,
+            y: 0,
+            width: bounds.width,
+            height: min(dockBodyHeight, bounds.height)
+        )
+        stripView.dockBodyFrame = convert(dockBodyFrame, to: stripView)
         stripView.needsLayout = true
         stripView.layoutSubtreeIfNeeded()
         updateBackgroundFrame()
@@ -233,6 +358,10 @@ final class DockContentView: NSView {
         onTooltipPresentation?(nil)
     }
 
+    func cancelFileDrag() {
+        clearFileDrag()
+    }
+
     /// Reconciles AppKit tracking with the monitor's current global pointer.
     /// Window moves and tracking-area replacement do not always deliver a
     /// final mouseExited event, so this keeps a stale label from surviving.
@@ -241,6 +370,7 @@ final class DockContentView: NSView {
         timestamp: TimeInterval = ProcessInfo.processInfo.systemUptime,
         allowsSyntheticEntry: Bool = false
     ) {
+        guard !isFileDragActive else { return }
         guard let window, window.isVisible else {
             stripView.cancelPointerInteraction()
             onTooltipPresentation?(nil)
@@ -285,7 +415,12 @@ final class DockContentView: NSView {
         }
 
         let text: String
-        if case let .failed(message) = item.transientState {
+        if item.kind == .trash,
+           isFileDragActive,
+           dropDestination == .trash,
+           !draggedShortcutIDs.isEmpty {
+            text = L10n.text("dock.drop.removeFromEchoDock")
+        } else if case let .failed(message) = item.transientState {
             text = message
         } else {
             text = item.displayName
@@ -308,6 +443,494 @@ final class DockContentView: NSView {
         )
     }
 
+    private func applyStrip(
+        animatedInsertionIdentities: Set<ApplicationIdentity> = [],
+        animatedRemovalIdentities: Set<ApplicationIdentity> = [],
+        reconfigureExistingItems: Bool = true
+    ) {
+        var items = snapshot.items
+        let insertionIdentities = animatedInsertionIdentities
+        if !draggedShortcutIDs.isEmpty,
+           dropPlaceholderShortcutIndex != nil {
+            items.removeAll { item in
+                guard let shortcutID = item.kind.shortcutID else { return false }
+                return draggedShortcutIDs.contains(shortcutID)
+            }
+        }
+        if let index = dropPlaceholderShortcutIndex,
+           let trashIndex = items.firstIndex(where: { $0.kind == .trash }) {
+            let shortcutIDs = snapshot.items.compactMap { $0.kind.shortcutID }
+            let requestedIndex = min(max(0, index), shortcutIDs.count)
+            let sourceCountBeforeTarget = isDraggedShortcutRemovedFromPresentation
+                ? 0
+                : shortcutIDs
+                    .prefix(requestedIndex)
+                    .filter { draggedShortcutIDs.contains($0) }
+                    .count
+            let visibleIndex = max(0, requestedIndex - sourceCountBeforeTarget)
+            let shortcutStart = items.firstIndex(where: {
+                if case .fileShortcut = $0.kind { return true }
+                return false
+            }) ?? trashIndex
+            let shortcutCount = items.filter {
+                if case .fileShortcut = $0.kind { return true }
+                return false
+            }.count
+            let insertionIndex = min(
+                shortcutStart + min(visibleIndex, shortcutCount),
+                trashIndex
+            )
+            items.insert(Self.dropPlaceholderItem, at: insertionIndex)
+        }
+
+        stripView.apply(
+            items: items,
+            pinnedItemCount: snapshot.pinnedItemCount,
+            iconSize: iconSize,
+            iconProvider: iconProvider,
+            onAction: { [weak self] item in self?.onItemAction?(item) },
+            onContextAction: { [weak self] item, action in
+                self?.onItemContextAction?(item, action)
+            },
+            contextMenuStateProvider: { [weak self] item in
+                self?.onItemContextMenuStateRequest?(item) ?? .unavailable
+            },
+            onContextMenuPresentationChange: { [weak self] presented in
+                if presented { self?.onTooltipPresentation?(nil) }
+                self?.onContextMenuPresentationChange?(presented)
+            },
+            onHover: { [weak self] button, item in
+                self?.updateTooltip(button: button, item: item)
+            },
+            magnificationEnabled: magnificationEnabled,
+            magnificationScale: magnificationScale,
+            magnificationRange: magnificationRange,
+            iconSpacing: iconSpacing,
+            animatedInsertionIdentities: insertionIdentities,
+            animatedRemovalIdentities: animatedRemovalIdentities,
+            reconfigureExistingItems: reconfigureExistingItems,
+            launchBounceAnimationsEnabled: launchBounceAnimationsEnabled,
+            runningIndicatorsEnabled: runningIndicatorsEnabled
+        )
+    }
+
+    private func beginFileDrag(_ sender: NSDraggingInfo) -> NSDragOperation {
+        return updateFileDrag(sender)
+    }
+
+    private func updateFileDrag(_ sender: NSDraggingInfo) -> NSDragOperation {
+        dragExitRevision &+= 1
+        preparedDraggingPayload = nil
+        preparedDropDestination = nil
+        guard let payload = payload(for: sender) else {
+            clearFileDrag()
+            return []
+        }
+        setFileDragActive(true)
+        let sourceShortcutIDs = Set(payload.sourceShortcutIDs)
+        if sourceShortcutIDs != draggedShortcutIDs {
+            draggedShortcutIDs = sourceShortcutIDs
+            if case .shortcuts = dropDestination {
+                applyStrip()
+                stripView.layoutSubtreeIfNeeded()
+            }
+        }
+        let pointInStrip = fileDragLocationInStrip(for: sender)
+        let destination = resolvedDropDestination(at: pointInStrip)
+        let operation = dragOperation(
+            for: destination,
+            sourceMask: sender.draggingSourceOperationMask
+        )
+        let acceptedDestination = operation == [] ? nil : destination
+        setDropDestination(acceptedDestination)
+        stripView.updateFileDragMagnification(at: pointInStrip)
+        return operation
+    }
+
+    private func presentBackgroundContextMenu(for event: NSEvent) {
+        let menu = NSMenu(title: "EchoDock")
+        menu.autoenablesItems = false
+        menu.allowsContextMenuPlugIns = false
+        if #available(macOS 15.2, *) {
+            menu.automaticallyInsertsWritingToolsItems = false
+        }
+
+        let settingsItem = NSMenuItem(
+            title: L10n.text("statusItem.settings"),
+            action: #selector(openSettingsFromContextMenu),
+            keyEquivalent: ","
+        )
+        settingsItem.keyEquivalentModifierMask = [.command]
+        settingsItem.target = self
+        settingsItem.image = NSImage(
+            systemSymbolName: "gearshape",
+            accessibilityDescription: settingsItem.title
+        )
+        menu.addItem(settingsItem)
+
+        let aboutItem = NSMenuItem(
+            title: L10n.text("statusItem.about"),
+            action: #selector(showAboutFromContextMenu),
+            keyEquivalent: ""
+        )
+        aboutItem.target = self
+        aboutItem.image = NSImage(
+            systemSymbolName: "info.circle",
+            accessibilityDescription: aboutItem.title
+        )
+        menu.addItem(aboutItem)
+
+        menu.addItem(.separator())
+
+        let quitItem = NSMenuItem(
+            title: L10n.text("statusItem.quit"),
+            action: #selector(quitFromContextMenu),
+            keyEquivalent: "q"
+        )
+        quitItem.keyEquivalentModifierMask = [.command]
+        quitItem.target = self
+        quitItem.image = NSImage(
+            systemSymbolName: "power",
+            accessibilityDescription: quitItem.title
+        )
+        menu.addItem(quitItem)
+
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func openSettingsFromContextMenu() {
+        NotificationCenter.default.post(
+            name: .echoDockOpenSettingsRequest,
+            object: self
+        )
+    }
+
+    @objc private func showAboutFromContextMenu() {
+        NotificationCenter.default.post(
+            name: .echoDockShowAboutRequest,
+            object: self
+        )
+    }
+
+    @objc private func quitFromContextMenu() {
+        NotificationCenter.default.post(
+            name: .echoDockQuitRequest,
+            object: self
+        )
+    }
+
+    private func setDropDestination(_ destination: DockDropDestination?) {
+        dropDestination = destination
+        stripView.setTrashDropTargeted(destination == .trash)
+
+        switch destination {
+        case .trash:
+            // Keep an existing shortcut placeholder alive while Trash is
+            // targeted. Removing it would recenter the panel and move Trash
+            // away from the stationary pointer.
+            return
+
+        case nil:
+            removeDropPlaceholder()
+            return
+
+        case let .shortcuts(index):
+            if dropPlaceholderShortcutIndex != nil {
+                dropPlaceholderShortcutIndex = index
+                stripView.moveDropPlaceholder(toShortcutIndex: index)
+                return
+            }
+
+            dropPlaceholderShortcutIndex = index
+            let insertionIdentities: Set<ApplicationIdentity> = draggedShortcutIDs.isEmpty
+                ? [Self.dropPlaceholderItem.identity]
+                : []
+            applyStrip(
+                animatedInsertionIdentities: insertionIdentities,
+                reconfigureExistingItems: false
+            )
+            isDraggedShortcutRemovedFromPresentation = !draggedShortcutIDs.isEmpty
+            synchronizePreferredGeometry()
+        }
+    }
+
+    private func removeDropPlaceholder(animated: Bool = true) {
+        guard dropPlaceholderShortcutIndex != nil else { return }
+        dropPlaceholderShortcutIndex = nil
+        isDraggedShortcutRemovedFromPresentation = false
+        let shouldAnimateRemoval = animated && draggedShortcutIDs.isEmpty
+        applyStrip(
+            animatedRemovalIdentities: shouldAnimateRemoval
+                ? [Self.dropPlaceholderItem.identity]
+                : [],
+            reconfigureExistingItems: false
+        )
+        synchronizePreferredGeometry()
+    }
+
+    private func clearFileDrag() {
+        dragExitRevision &+= 1
+        activeDraggingSequenceNumber = nil
+        cachedDraggingPayload = nil
+        preparedDraggingPayload = nil
+        preparedDropDestination = nil
+        let preservesCommittedPlaceholder = pendingShortcutDropHandoff != nil
+            || pendingShortcutRemovalHandoff != nil
+        let shouldPreserveCommittedPlaceholder = preservesCommittedPlaceholder
+            && dropPlaceholderShortcutIndex != nil
+        if !shouldPreserveCommittedPlaceholder {
+            removeDropPlaceholder()
+            draggedShortcutIDs.removeAll()
+            isDraggedShortcutRemovedFromPresentation = false
+        }
+        setFileDragActive(false)
+        dropDestination = nil
+        stripView.setTrashDropTargeted(false)
+    }
+
+    private func setFileDragActive(_ active: Bool) {
+        guard isFileDragActive != active else { return }
+        isFileDragActive = active
+        stripView.setFileDragActive(active)
+
+        if active {
+            let currentWidth = max(frame.width, max(preferredWidth, targetPreferredWidth))
+            let reservedWidth = min(maxWidth, currentWidth + iconSize + iconSpacing)
+            let lockedSize = NSSize(
+                width: reservedWidth,
+                height: max(
+                    frame.height,
+                    preferredHeight,
+                    dockBodyHeight + maximumMagnificationHeadroom
+                )
+            )
+            fileDragLockedSize = lockedSize
+            frame.size = lockedSize
+        } else {
+            fileDragLockedSize = nil
+            preferredWidth = targetPreferredWidth
+            preferredHeight = targetPreferredHeight
+            frame.size = NSSize(width: preferredWidth, height: preferredHeight)
+        }
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        onFileDragActivityChange?(active)
+        if active {
+            onTooltipPresentation?(nil)
+        }
+    }
+
+    private func synchronizePreferredGeometry() {
+        let targetWidth = targetPreferredWidth
+        let targetHeight = targetPreferredHeight
+        let changed = abs(targetWidth - preferredWidth) > 0.01
+            || abs(targetHeight - preferredHeight) > 0.01
+        preferredWidth = targetWidth
+        preferredHeight = targetHeight
+        guard !isFileDragActive else {
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+            return
+        }
+        frame.size = NSSize(width: targetWidth, height: targetHeight)
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        if changed {
+            onPreferredSizeChange?(NSSize(width: targetWidth, height: targetHeight))
+        }
+    }
+
+    private func payload(for sender: NSDraggingInfo) -> DraggingPayload? {
+        let sequenceNumber = sender.draggingSequenceNumber
+        if activeDraggingSequenceNumber != sequenceNumber {
+            if activeDraggingSequenceNumber != nil {
+                clearFileDrag()
+            }
+            activeDraggingSequenceNumber = sequenceNumber
+            cachedDraggingPayload = nil
+        }
+        if cachedDraggingPayload == nil {
+            cachedDraggingPayload = draggingPayload(from: sender)
+        }
+        return cachedDraggingPayload
+    }
+
+    private func fileDragLocationInStrip(for sender: NSDraggingInfo) -> NSPoint {
+        let pointInContent: NSPoint
+        if let window {
+            let pointInWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+            pointInContent = convert(pointInWindow, from: nil)
+        } else {
+            pointInContent = convert(sender.draggingLocation, from: nil)
+        }
+        return stripView.convert(pointInContent, from: self)
+    }
+
+    private func resolvedDropDestination(
+        at pointInStrip: NSPoint,
+        usesHoverHysteresis: Bool = true
+    ) -> DockDropDestination? {
+        return stripView.dropDestination(
+            at: pointInStrip,
+            preservesTrashTarget: usesHoverHysteresis && dropDestination == .trash,
+            preservesShortcutTarget: usesHoverHysteresis
+                && (dropPlaceholderShortcutIndex != nil || dropDestination == .trash)
+        )
+    }
+
+    private func dragOperation(
+        for destination: DockDropDestination?,
+        sourceMask: NSDragOperation
+    ) -> NSDragOperation {
+        switch destination {
+        case .trash:
+            if sourceMask.contains(.delete) { return .delete }
+            if sourceMask.contains(.move) { return .move }
+            if sourceMask.contains(.generic) { return .generic }
+            // Some external file sources only advertise copy. The receiver
+            // still performs the requested recycle through NSWorkspace.
+            if sourceMask.contains(.copy) { return .copy }
+            return []
+
+        case .shortcuts:
+            if sourceMask.contains(.copy) { return .copy }
+            if sourceMask.contains(.move) { return .move }
+            return []
+
+        case nil:
+            return []
+        }
+    }
+
+    private func requestDestination(
+        _ destination: DockDropDestination,
+        sourceShortcutIDs: [UUID]
+    ) -> DockDropDestination {
+        guard case let .shortcuts(visibleIndex) = destination,
+              isDraggedShortcutRemovedFromPresentation,
+              !sourceShortcutIDs.isEmpty else {
+            return destination
+        }
+
+        let originalIDs = snapshot.items.compactMap(\.kind.shortcutID)
+        let movingIDs = Set(sourceShortcutIDs).intersection(originalIDs)
+        guard !movingIDs.isEmpty else { return destination }
+
+        let remainingIDs = originalIDs.filter { !movingIDs.contains($0) }
+        let clampedVisibleIndex = min(max(0, visibleIndex), remainingIDs.count)
+        guard clampedVisibleIndex < remainingIDs.count else {
+            return .shortcuts(index: originalIDs.count)
+        }
+
+        let targetID = remainingIDs[clampedVisibleIndex]
+        let originalIndex = originalIDs.firstIndex(of: targetID)
+            ?? originalIDs.count
+        return .shortcuts(index: originalIndex)
+    }
+
+    private func scheduleFileDragExit(for sender: NSDraggingInfo?) {
+        let sequenceNumber = sender?.draggingSequenceNumber
+            ?? activeDraggingSequenceNumber
+        dragExitRevision &+= 1
+        let revision = dragExitRevision
+        DispatchQueue.main.async { [weak self] in
+            guard let self,
+                  self.dragExitRevision == revision,
+                  self.activeDraggingSequenceNumber == sequenceNumber else { return }
+            guard !self.isPointerWithinDragBounds else { return }
+            self.clearFileDrag()
+        }
+    }
+
+    private var isPointerWithinDragBounds: Bool {
+        guard let window else { return false }
+        let pointInWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let pointInContent = convert(pointInWindow, from: nil)
+        return bounds.contains(pointInContent)
+    }
+
+    private func draggingPayload(from sender: NSDraggingInfo) -> DraggingPayload? {
+        let pasteboard = sender.draggingPasteboard
+        let pasteboardItems = pasteboard.pasteboardItems ?? []
+        let internalPayloads = pasteboardItems.compactMap { item -> DockInternalShortcutDrag? in
+            guard let data = item.data(forType: .echoDockInternalShortcut) else { return nil }
+            return try? JSONDecoder().decode(DockInternalShortcutDrag.self, from: data)
+        }
+        let readURLs = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        )?.compactMap { object -> URL? in
+            if let url = object as? URL { return url }
+            if let url = object as? NSURL { return url as URL }
+            return nil
+        } ?? []
+        let itemURLs = pasteboardItems.compactMap { item -> URL? in
+            guard let value = item.string(forType: .fileURL) else { return nil }
+            return URL(string: value)
+        }
+        var seenPaths = Set<String>()
+        let urls = (internalPayloads.map(\.fileURL) + readURLs + itemURLs).compactMap { url -> URL? in
+            guard url.isFileURL else { return nil }
+            let normalized = url.standardizedFileURL
+            return seenPaths.insert(normalized.path).inserted ? normalized : nil
+        }
+        guard !urls.isEmpty else { return nil }
+        return DraggingPayload(
+            fileURLs: urls,
+            sourceShortcutIDs: internalPayloads.map(\.shortcutID)
+        )
+    }
+
+    private func mergedDraggingPayload(
+        preferred: DraggingPayload?,
+        fallback: DraggingPayload?
+    ) -> DraggingPayload? {
+        guard preferred != nil || fallback != nil else { return nil }
+
+        var seenPaths = Set<String>()
+        let fileURLs = ((preferred?.fileURLs ?? []) + (fallback?.fileURLs ?? []))
+            .filter { seenPaths.insert($0.standardizedFileURL.path).inserted }
+        guard !fileURLs.isEmpty else { return nil }
+
+        var seenShortcutIDs = Set<UUID>()
+        let sourceShortcutIDs = (
+            (preferred?.sourceShortcutIDs ?? [])
+                + (fallback?.sourceShortcutIDs ?? [])
+        ).filter { seenShortcutIDs.insert($0).inserted }
+        return DraggingPayload(
+            fileURLs: fileURLs,
+            sourceShortcutIDs: sourceShortcutIDs
+        )
+    }
+
+    private static let dropPlaceholderItem = DockItem(
+        identity: ApplicationIdentity(rawValue: "system:drop-placeholder"),
+        bundleIdentifier: nil,
+        applicationURL: URL(fileURLWithPath: "/dev/null"),
+        displayName: "",
+        section: .files,
+        kind: .dropPlaceholder,
+        isRunning: false,
+        isActive: false,
+        isHidden: false,
+        transientState: .normal
+    )
+
+    private struct DraggingPayload {
+        let fileURLs: [URL]
+        let sourceShortcutIDs: [UUID]
+    }
+
+    private struct ShortcutDropHandoff {
+        let baselineRevision: UInt64
+        let baselineShortcutIDs: [UUID]
+    }
+
+    private struct ShortcutRemovalHandoff {
+        let baselineRevision: UInt64
+        let shortcutIDs: Set<UUID>
+    }
+
     private func updatePreferredHeight(forMagnification isActive: Bool) {
         isMagnificationHeadroomActive = isActive
         updatePreferredHeight()
@@ -318,6 +941,11 @@ final class DockContentView: NSView {
         guard abs(targetHeight - preferredHeight) > 0.01 else { return }
 
         preferredHeight = targetHeight
+        guard !isFileDragActive else {
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+            return
+        }
         frame.size.height = targetHeight
         needsLayout = true
         onPreferredSizeChange?(NSSize(width: preferredWidth, height: targetHeight))
@@ -328,6 +956,11 @@ final class DockContentView: NSView {
         guard abs(targetWidth - preferredWidth) > 0.01 else { return }
 
         preferredWidth = targetWidth
+        guard !isFileDragActive else {
+            needsLayout = true
+            layoutSubtreeIfNeeded()
+            return
+        }
         frame.size.width = targetWidth
         needsLayout = true
         layoutSubtreeIfNeeded()
@@ -406,6 +1039,11 @@ final class DockContentView: NSView {
 
 private final class HorizontalDockScrollView: NSScrollView {
     var onScroll: ((NSEvent) -> Void)?
+    var onBackgroundContextMenu: ((NSEvent) -> Void)?
+
+    override func rightMouseDown(with event: NSEvent) {
+        onBackgroundContextMenu?(event)
+    }
 
     override func scrollWheel(with event: NSEvent) {
         guard let clipView = contentView as NSClipView? else {
@@ -426,6 +1064,28 @@ private final class HorizontalDockScrollView: NSScrollView {
 }
 
 struct DockHoverResolver {
+    /// Keeps each button's horizontal slot while extending it through the
+    /// complete vertical Dock region.
+    static func hoverFrames(
+        slotFrames: [NSRect?],
+        in bounds: NSRect
+    ) -> [NSRect] {
+        guard bounds.width > 0, bounds.height > 0 else {
+            return Array(repeating: .zero, count: slotFrames.count)
+        }
+        return slotFrames.map { slotFrame in
+            guard let slotFrame, slotFrame.width > 0 else { return .zero }
+            let minimumX = min(bounds.maxX, max(bounds.minX, slotFrame.minX))
+            let maximumX = min(bounds.maxX, max(minimumX, slotFrame.maxX))
+            return NSRect(
+                x: minimumX,
+                y: bounds.minY,
+                width: maximumX - minimumX,
+                height: bounds.height
+            )
+        }
+    }
+
     static func hoveredIndex(
         at point: NSPoint,
         in bounds: NSRect,
@@ -594,10 +1254,11 @@ private final class DockStripView: NSView {
     var onPointerInteractionChange: ((Bool) -> Void)?
     var onRequiredWidthChange: (() -> Void)?
     var onLaunchBounceActivityChange: ((Bool) -> Void)?
+    var onBackgroundContextMenu: ((NSEvent) -> Void)?
 
     private var itemButtons: [ApplicationIdentity: DockItemButton] = [:]
     private var orderedButtons: [DockItemButton] = []
-    private let separatorView = NSView()
+    private var separatorViews: [NSView] = []
     private var pinnedItemCount = 0
     private var iconSize: CGFloat = 48
     private(set) var requiredWidth: CGFloat = 0
@@ -609,6 +1270,7 @@ private final class DockStripView: NSView {
     private var hoveredButton: DockItemButton?
     private weak var contextMenuButton: DockItemButton?
     private var isContextMenuPresented = false
+    private var isTrashDropTargeted = false
     private var onHover: ((DockItemButton, DockItem?) -> Void)?
     private var magnificationTransition = DockMagnificationTransition()
     private var displayLinkDriver: AnyObject?
@@ -625,6 +1287,7 @@ private final class DockStripView: NSView {
     private var launchBounceOffsets: [ApplicationIdentity: CGFloat] = [:]
     private var wasLaunchBounceActive = false
     private var isMagnificationHeadroomActive = false
+    private var isFileDragActive = false
     private var magnificationEnabled = true
     private var maximumMagnification: CGFloat = 1.18
     private var iconSpacing: CGFloat = 5.2
@@ -636,14 +1299,12 @@ private final class DockStripView: NSView {
 
     private(set) var visibleIconFrames: [NSRect] = []
     private var tooltipHoverFrames: [NSRect] = []
+    private var tooltipHoverBounds: NSRect = .zero
+    var dockBodyFrame: NSRect?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         clipsToBounds = false
-        separatorView.wantsLayer = true
-        updateSeparatorAppearance()
-        separatorView.isHidden = true
-        addSubview(separatorView)
         NSWorkspace.shared.notificationCenter.addObserver(
             self,
             selector: #selector(accessibilityDisplayOptionsDidChange),
@@ -654,6 +1315,63 @@ private final class DockStripView: NSView {
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onBackgroundContextMenu?(event)
+    }
+
+    func setFileDragActive(_ active: Bool) {
+        guard isFileDragActive != active else { return }
+        isFileDragActive = active
+        guard active else {
+            isPointerInside = false
+            pointerPoint = nil
+            clearHoveredButton()
+            setMagnificationTarget(0)
+            return
+        }
+
+        isPointerInside = false
+        pointerX = nil
+        pointerPoint = nil
+        clearHoveredButton()
+        magnificationTransition.snap(to: 0)
+        if !hasActivePresentationAnimation {
+            stopMagnificationFrameClock()
+        }
+        updateMagnificationHeadroomActivity()
+        renderMagnification()
+    }
+
+    func updateFileDragMagnification(at point: NSPoint) {
+        guard isFileDragActive else { return }
+        guard containsInteractivePoint(point) else {
+            let wasActive = isPointerInside || magnificationTransition.target != 0
+            isPointerInside = false
+            pointerPoint = nil
+            if wasActive {
+                setMagnificationTarget(0)
+            }
+            return
+        }
+
+        let justEntered = !isPointerInside
+        let pointChanged = DockPointerSamplePolicy.hasChanged(
+            from: pointerPoint,
+            to: point
+        )
+        isPointerInside = true
+        pointerX = point.x
+        pointerPoint = point
+        if justEntered {
+            setMagnificationTarget(1)
+        }
+        if magnificationEnabled, pointChanged {
+            requestMagnificationRender(.pointerChanged)
+        } else {
+            updateHoveredButton(at: point, reemitCurrent: false)
+        }
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -686,6 +1404,7 @@ private final class DockStripView: NSView {
         iconSpacing: CGFloat = 5.2,
         animatedInsertionIdentities: Set<ApplicationIdentity> = [],
         animatedRemovalIdentities: Set<ApplicationIdentity> = [],
+        reconfigureExistingItems: Bool = true,
         launchBounceAnimationsEnabled: Bool = false,
         runningIndicatorsEnabled: Bool = true
     ) {
@@ -695,8 +1414,9 @@ private final class DockStripView: NSView {
             identity, button in
             button.item.map { (identity, $0.transientState) }
         })
-        let previousHadSeparator = self.pinnedItemCount > 0
-            && self.pinnedItemCount < orderedButtons.count
+        let previousHadSeparator = !sectionSeparatorIndices(
+            for: orderedButtons.compactMap(\.item)
+        ).isEmpty
         self.onHover = onHover
         self.pinnedItemCount = pinnedItemCount
         self.iconSize = iconSize
@@ -707,26 +1427,26 @@ private final class DockStripView: NSView {
         let incomingByIdentity = Dictionary(uniqueKeysWithValues: items.map { ($0.identity, $0) })
         let incomingIdentities = Set(incomingByIdentity.keys)
 
-        var presentationItems = Array(items.prefix(pinnedItemCount))
+        var presentationItems = items
         var presentedIdentities = Set(presentationItems.map(\.identity))
-        for button in orderedButtons {
+        let removableIdentities = Set(orderedButtons.compactMap { button -> ApplicationIdentity? in
             guard let previousItem = button.item,
-                  previousItem.section == .running,
-                  !presentedIdentities.contains(previousItem.identity) else { continue }
-            if let incomingItem = incomingByIdentity[previousItem.identity],
-               incomingItem.section == .running {
-                presentationItems.append(incomingItem)
-                presentedIdentities.insert(incomingItem.identity)
-            } else if removingIdentities.contains(previousItem.identity)
-                        || animatedRemovalIdentities.contains(previousItem.identity) {
-                presentationItems.append(previousItem)
-                presentedIdentities.insert(previousItem.identity)
+                  !incomingIdentities.contains(previousItem.identity),
+                  removingIdentities.contains(previousItem.identity)
+                    || animatedRemovalIdentities.contains(previousItem.identity) else {
+                return nil
             }
-        }
-        for item in items.dropFirst(pinnedItemCount)
-        where !presentedIdentities.contains(item.identity) {
-            presentationItems.append(item)
-            presentedIdentities.insert(item.identity)
+            return previousItem.identity
+        })
+        for (oldIndex, button) in orderedButtons.enumerated().reversed() {
+            guard let previousItem = button.item,
+                  removableIdentities.contains(previousItem.identity),
+                  !presentedIdentities.contains(previousItem.identity) else { continue }
+            presentationItems.insert(
+                previousItem,
+                at: min(oldIndex, presentationItems.count)
+            )
+            presentedIdentities.insert(previousItem.identity)
         }
 
         let identitiesToRemove = itemButtons.keys.filter {
@@ -755,13 +1475,16 @@ private final class DockStripView: NSView {
                     notify: onContextMenuPresentationChange
                 )
             }
-            button.configure(
-                item: item,
-                iconSize: iconSize,
-                iconProvider: iconProvider,
-                showsRunningIndicator: runningIndicatorsEnabled
-            )
-            button.isEnabled = incomingIdentities.contains(item.identity)
+            if reconfigureExistingItems || button.item == nil {
+                button.configure(
+                    item: item,
+                    iconSize: iconSize,
+                    iconProvider: iconProvider,
+                    showsRunningIndicator: runningIndicatorsEnabled
+                )
+            }
+            button.isEnabled = item.kind != .dropPlaceholder
+                && incomingIdentities.contains(item.identity)
             return button
         }
 
@@ -769,9 +1492,8 @@ private final class DockStripView: NSView {
             setPresenceTarget(1, for: identity, at: now)
         }
 
-        let insertedRunningItems = items.filter { item in
-            item.section == .running
-                && animatedInsertionIdentities.contains(item.identity)
+        let insertedItems = items.filter { item in
+                animatedInsertionIdentities.contains(item.identity)
                 && !previousIdentities.contains(item.identity)
         }
         let newlyRemovedIdentities = animatedRemovalIdentities.filter {
@@ -793,21 +1515,24 @@ private final class DockStripView: NSView {
             finishPresenceAnimations()
             finishLaunchBounceAnimations(notify: false)
         } else {
-            for item in insertedRunningItems {
+            for item in insertedItems {
                 itemPresenceValues[item.identity] = 0
-                itemPresenceTransitions[item.identity] = .insertion(startTime: now)
+                itemPresenceTransitions[item.identity] = .insertion(
+                    startTime: now,
+                    profile: item.kind == .dropPlaceholder ? .dropPlaceholder : .standard
+                )
             }
         }
 
-        let presentationHasSeparator = pinnedItemCount > 0
-            && pinnedItemCount < orderedButtons.count
-        let finalHasSeparator = pinnedItemCount > 0
-            && pinnedItemCount < items.count
+        let presentationHasSeparator = !sectionSeparatorIndices(
+            for: orderedButtons.compactMap(\.item)
+        ).isEmpty
+        let finalHasSeparator = !sectionSeparatorIndices(for: items).isEmpty
         updateSeparatorPresence(
             presentationHasSeparator: presentationHasSeparator,
             finalHasSeparator: finalHasSeparator,
             previousHadSeparator: previousHadSeparator,
-            hasAnimatedInsertions: !insertedRunningItems.isEmpty,
+            hasAnimatedInsertions: !insertedItems.isEmpty,
             hasAnimatedRemovals: !newlyRemovedIdentities.isEmpty,
             at: now
         )
@@ -819,7 +1544,7 @@ private final class DockStripView: NSView {
             }
             return Set(
                 items
-                    .filter { $0.transientState == .launching }
+                    .filter { $0.transientState == .launching && !$0.isRunning }
                     .map(\.identity)
             )
         }()
@@ -832,10 +1557,8 @@ private final class DockStripView: NSView {
             )
             launchBounceOffsets[item.identity] = 0
         }
-        for identity in Array(launchBounceTransitions.keys)
-        where !launchingIdentities.contains(identity) {
-            launchBounceTransitions.removeValue(forKey: identity)
-            launchBounceOffsets.removeValue(forKey: identity)
+        if !launchBounceAnimationsEnabled {
+            finishLaunchBounceAnimations(notify: false)
         }
 
         itemPresenceTransitions = itemPresenceTransitions.filter {
@@ -847,9 +1570,11 @@ private final class DockStripView: NSView {
         removingIdentities.formIntersection(presentedIdentities)
         launchBounceTransitions = launchBounceTransitions.filter {
             presentedIdentities.contains($0.key)
+                && launchingIdentities.contains($0.key)
         }
         launchBounceOffsets = launchBounceOffsets.filter {
             presentedIdentities.contains($0.key)
+                && launchingIdentities.contains($0.key)
         }
 
         recalculateRequiredWidth()
@@ -876,6 +1601,129 @@ private final class DockStripView: NSView {
     override func layout() {
         super.layout()
         renderMagnification()
+    }
+
+    func moveDropPlaceholder(toShortcutIndex requestedIndex: Int) {
+        guard let placeholderIndex = orderedButtons.firstIndex(where: {
+            $0.item?.kind == .dropPlaceholder
+        }) else { return }
+
+        let currentShortcutIndex = orderedButtons[..<placeholderIndex].reduce(into: 0) {
+            count, button in
+            if case .fileShortcut? = button.item?.kind {
+                count += 1
+            }
+        }
+        let fileButtonCount = orderedButtons.reduce(into: 0) { count, button in
+            if case .fileShortcut? = button.item?.kind {
+                count += 1
+            }
+        }
+        let targetShortcutIndex = min(max(0, requestedIndex), fileButtonCount)
+        guard currentShortcutIndex != targetShortcutIndex else { return }
+
+        let placeholderButton = orderedButtons.remove(at: placeholderIndex)
+        let fileButtons = orderedButtons.filter { button in
+            if case .fileShortcut? = button.item?.kind { return true }
+            return false
+        }
+        let targetButton = targetShortcutIndex < fileButtons.count
+            ? fileButtons[targetShortcutIndex]
+            : orderedButtons.first(where: { $0.item?.kind == .trash })
+        guard let targetButton,
+              let insertionIndex = orderedButtons.firstIndex(where: { $0 === targetButton }) else {
+            orderedButtons.insert(placeholderButton, at: min(placeholderIndex, orderedButtons.count))
+            return
+        }
+
+        orderedButtons.insert(placeholderButton, at: insertionIndex)
+        renderMagnification()
+    }
+
+    func dropDestination(
+        at point: NSPoint,
+        preservesTrashTarget: Bool = false,
+        preservesShortcutTarget: Bool = false
+    ) -> DockDropDestination? {
+        guard point.x >= bounds.minX - 8,
+              point.x <= bounds.maxX + 8 else { return nil }
+        guard let trashButton = orderedButtons.first(where: { $0.item?.kind == .trash }) else {
+            return nil
+        }
+
+        // Trash and the shortcut section share a hard horizontal boundary.
+        // Hover hysteresis may grow to the right, but never left into the
+        // shortcut insertion slot.
+        let trashIconFrame = trashButton.iconFrame(in: self)
+        let trashRightPadding: CGFloat = preservesTrashTarget ? 8 : 4
+        let trashEntryMaxX = max(trashIconFrame.maxX, trashButton.frame.maxX)
+            + trashRightPadding
+        let trashEntryMinX = trashButton.frame.minX
+        if point.x >= trashEntryMinX, point.x <= trashEntryMaxX {
+            return .trash
+        }
+
+        let fileButtons = orderedButtons.filter { button in
+            guard let item = button.item else { return false }
+            if case .fileShortcut = item.kind { return true }
+            return false
+        }
+
+        let slotWidth = iconSize + iconSpacing
+        let shortcutTargetWidth = preservesShortcutTarget
+            ? slotWidth * 1.5 + 4
+            : slotWidth
+        let bootstrapStart = trashButton.frame.minX - shortcutTargetWidth
+        let fileSectionHysteresis = preservesShortcutTarget ? slotWidth / 2 + 4 : 0
+        let existingFileSectionStart = fileButtons
+            .map(\.frame.minX)
+            .min()
+            .map {
+                $0
+                    - DockMagnificationLayout.separatorSpace / 2
+                    - fileSectionHysteresis
+            }
+        let placeholderSectionStart = orderedButtons
+            .first(where: { $0.item?.kind == .dropPlaceholder })
+            .map { button in
+                // During insertion the placeholder grows from zero width. Use
+                // its projected full-width edge so a visible slot remains a
+                // valid final drop target throughout the animation.
+                button.frame.minX - max(0, slotWidth - button.frame.width) / 2
+            }
+        let fileSectionStart = min(
+            bootstrapStart,
+            existingFileSectionStart ?? bootstrapStart,
+            placeholderSectionStart ?? bootstrapStart
+        )
+        guard point.x >= fileSectionStart,
+              point.x < trashButton.frame.minX else {
+            return nil
+        }
+
+        let insertionIndex = fileButtons.firstIndex { button in
+            point.x < button.frame.midX
+        } ?? fileButtons.count
+        return .shortcuts(index: insertionIndex)
+    }
+
+    func setTrashDropTargeted(_ targeted: Bool) {
+        guard let button = orderedButtons.first(where: { $0.item?.kind == .trash }) else {
+            isTrashDropTargeted = false
+            return
+        }
+        let wasTargeted = isTrashDropTargeted
+        isTrashDropTargeted = targeted
+        button.setDropTargeted(targeted)
+        if targeted, let item = button.item {
+            onHover?(button, item)
+        } else if wasTargeted {
+            if hoveredButton === button {
+                clearHoveredButton()
+            } else {
+                onHover?(button, nil)
+            }
+        }
     }
 
     override func updateTrackingAreas() {
@@ -936,6 +1784,7 @@ private final class DockStripView: NSView {
     }
 
     private func handlePointer(at point: NSPoint, timestamp: TimeInterval) {
+        guard !isFileDragActive else { return }
         guard acceptPointerSample(timestamp: timestamp) else { return }
         guard !isContextMenuPresented else { return }
         guard containsInteractivePoint(point) else {
@@ -966,12 +1815,14 @@ private final class DockStripView: NSView {
     }
 
     func refreshPointer(with event: NSEvent) {
+        if isFileDragActive {
+            return
+        }
         handlePointerEvent(event)
     }
 
-    /// Sampled pointers normally only validate an AppKit-owned interaction.
-    /// The controller may allow one synthetic entry when a panel transitions
-    /// from ignoring mouse events back into its real interactive region.
+    /// Periodic samples also recover an entry when AppKit omits mouseEntered
+    /// or mouseMoved, which can happen during an extremely slow side entry.
     @discardableResult
     func reconcilePointer(
         at point: NSPoint,
@@ -1276,7 +2127,10 @@ private final class DockStripView: NSView {
         itemPresenceTransitions[identity] = .transition(
             from: currentValue,
             to: targetValue,
-            startTime: time
+            startTime: time,
+            profile: itemButtons[identity]?.item?.kind == .dropPlaceholder
+                ? .dropPlaceholder
+                : .standard
         )
     }
 
@@ -1353,9 +2207,13 @@ private final class DockStripView: NSView {
 
     @discardableResult
     private func recalculateRequiredWidth() -> Bool {
+        let separatorIndices = sectionSeparatorIndices(
+            for: orderedButtons.compactMap(\.item)
+        )
         let newValue = DockMagnificationLayout.maximumRequiredWidth(
             itemCount: orderedButtons.count,
             pinnedItemCount: pinnedItemCount,
+            separatorIndices: separatorIndices,
             iconSize: iconSize,
             spacing: iconSpacing,
             maximumScale: magnificationEnabled ? maximumMagnification : 1,
@@ -1402,11 +2260,17 @@ private final class DockStripView: NSView {
             bounds.maxX,
             visualContentFrame.maxX + DockInteractiveRegion.backgroundHorizontalPadding
         )
+        let verticalBodyFrame = dockBodyFrame ?? NSRect(
+            x: bounds.minX,
+            y: bounds.minY,
+            width: bounds.width,
+            height: min(bounds.height, iconSize + 20)
+        )
         let bodyFrame = NSRect(
             x: minimumX,
-            y: bounds.minY,
+            y: verticalBodyFrame.minY,
             width: max(0, maximumX - minimumX),
-            height: min(bounds.height, iconSize + 20)
+            height: verticalBodyFrame.height
         )
         return DockInteractiveRegion.contains(
             point,
@@ -1419,18 +2283,21 @@ private final class DockStripView: NSView {
         let presenceValues = orderedButtons.map { button in
             button.item.flatMap { itemPresenceValues[$0.identity] } ?? 1
         }
-        let hasSeparator = pinnedItemCount > 0
-            && pinnedItemCount < orderedButtons.count
+        let separatorIndices = sectionSeparatorIndices(
+            for: orderedButtons.compactMap(\.item)
+        )
+        let hasSeparator = !separatorIndices.isEmpty
         let presentedRequiredWidth = DockMagnificationLayout.presentedRequiredWidth(
             itemPresenceProgresses: presenceValues,
             hasSeparator: hasSeparator,
+            separatorCount: separatorIndices.count,
             separatorPresenceProgress: separatorPresence,
             iconSize: iconSize,
             spacing: iconSpacing,
             maximumScale: magnificationEnabled ? maximumMagnification : 1,
             influenceRange: magnificationRange
         )
-        let horizontalOffset = DockInsertionHorizontalAlignment.offset(
+        let initialHorizontalOffset = DockInsertionHorizontalAlignment.offset(
             presentedRequiredWidth: presentedRequiredWidth,
             finalDocumentWidth: bounds.width,
             finalViewportWidth: enclosingScrollView?.contentSize.width ?? bounds.width
@@ -1438,6 +2305,7 @@ private final class DockStripView: NSView {
         let layout = DockMagnificationLayout.make(
             itemCount: orderedButtons.count,
             pinnedItemCount: pinnedItemCount,
+            separatorIndices: separatorIndices,
             iconSize: iconSize,
             spacing: iconSpacing,
             maximumScale: magnificationEnabled ? maximumMagnification : 1,
@@ -1445,15 +2313,19 @@ private final class DockStripView: NSView {
             containerWidth: bounds.width,
             height: bounds.height,
             pointerX: magnificationEnabled
-                ? pointerX.map { $0 - horizontalOffset }
+                ? pointerX.map { $0 - initialHorizontalOffset }
                 : nil,
             magnificationProgress: magnificationTransition.value,
             itemPresenceProgresses: presenceValues,
             separatorPresenceProgress: separatorPresence
         )
+        let horizontalOffset = initialHorizontalOffset
 
         visibleIconFrames.removeAll(keepingCapacity: true)
-        tooltipHoverFrames.removeAll(keepingCapacity: true)
+        var tooltipSlotFrames = Array<NSRect?>(
+            repeating: nil,
+            count: orderedButtons.count
+        )
         for index in orderedButtons.indices {
             let button = orderedButtons[index]
             let targetFrame = layout.buttonFrames[index].offsetBy(
@@ -1470,24 +2342,32 @@ private final class DockStripView: NSView {
                 launchBounceOffset: identity.flatMap { launchBounceOffsets[$0] } ?? 0
             )
             let iconFrame = button.iconFrame(in: self)
-            if let identity, removingIdentities.contains(identity) {
-                tooltipHoverFrames.append(.zero)
-            } else {
+            let excludesTooltip = identity.map(removingIdentities.contains) ?? false
+                || orderedButtons[index].item?.kind == .dropPlaceholder
+            if !excludesTooltip {
                 visibleIconFrames.append(iconFrame)
-                tooltipHoverFrames.append(NSRect(
-                    x: targetFrame.minX,
-                    y: iconFrame.minY,
-                    width: targetFrame.width,
-                    height: iconFrame.height
-                ))
+                tooltipSlotFrames[index] = targetFrame
             }
         }
+        let verticalHoverBounds = dockBodyFrame.map { bounds.union($0) } ?? bounds
+        tooltipHoverBounds = NSRect(
+            x: bounds.minX,
+            y: verticalHoverBounds.minY,
+            width: bounds.width,
+            height: verticalHoverBounds.height
+        )
+        tooltipHoverFrames = DockHoverResolver.hoverFrames(
+            slotFrames: tooltipSlotFrames,
+            in: tooltipHoverBounds
+        )
         updateHoveredButton(at: pointerPoint)
 
-        if let separatorFrame = layout.separatorFrame {
+        ensureSeparatorViewCount(layout.separatorFrames.count)
+        for (index, separatorFrame) in layout.separatorFrames.enumerated() {
             let scale = window?.backingScaleFactor
                 ?? NSScreen.main?.backingScaleFactor
                 ?? 2
+            let separatorView = separatorViews[index]
             let targetFrame = DockMagnificationLayout.pixelAlignedSeparatorFrame(
                 separatorFrame.offsetBy(dx: horizontalOffset, dy: 0),
                 backingScaleFactor: scale
@@ -1504,7 +2384,8 @@ private final class DockStripView: NSView {
             if separatorView.isHidden {
                 separatorView.isHidden = false
             }
-        } else if !separatorView.isHidden {
+        }
+        for separatorView in separatorViews.dropFirst(layout.separatorFrames.count) {
             separatorView.isHidden = true
         }
 
@@ -1555,7 +2436,7 @@ private final class DockStripView: NSView {
               let point,
               let index = DockHoverResolver.hoveredIndex(
                 at: point,
-                in: bounds,
+                in: tooltipHoverBounds,
                 hoverFrames: tooltipHoverFrames
               ),
               orderedButtons.indices.contains(index),
@@ -1627,8 +2508,27 @@ private final class DockStripView: NSView {
     }
 
     private func updateSeparatorAppearance() {
-        separatorView.layer?.backgroundColor = NSColor.separatorColor
-            .withAlphaComponent(0.72)
-            .cgColor
+        for separatorView in separatorViews {
+            separatorView.layer?.backgroundColor = NSColor.separatorColor
+                .withAlphaComponent(0.72)
+                .cgColor
+        }
+    }
+
+    private func ensureSeparatorViewCount(_ count: Int) {
+        while separatorViews.count < count {
+            let view = NSView()
+            view.wantsLayer = true
+            separatorViews.append(view)
+            addSubview(view)
+            updateSeparatorAppearance()
+        }
+    }
+
+    private func sectionSeparatorIndices(for items: [DockItem]) -> Set<Int> {
+        guard items.count > 1 else { return [] }
+        return Set(items.indices.dropFirst().filter { index in
+            items[index - 1].section != items[index].section
+        })
     }
 }

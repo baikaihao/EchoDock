@@ -143,7 +143,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private var syncStatusTitle: String {
         switch snapshot.syncStatus {
         case .normal:
-            return L10n.format("statusItem.syncCount", snapshot.items.count)
+            let applicationCount = snapshot.items.filter { $0.kind.isApplication }.count
+            return L10n.format("statusItem.syncCount", applicationCount)
         case .cached:
             return L10n.text("statusItem.cachedApps")
         case let .unavailable(message):
@@ -194,6 +195,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     @objc private func showAbout() {
+        showAboutWindow()
+    }
+
+    func showAboutWindow() {
         NSApp.activate(ignoringOtherApps: true)
         if aboutWindowController == nil {
             aboutWindowController = AboutWindowController()

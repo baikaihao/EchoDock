@@ -70,45 +70,74 @@ struct DockMagnificationTransition {
 }
 
 struct DockItemPresenceTransition: Equatable {
+    enum Profile: Equatable {
+        case standard
+        case dropPlaceholder
+    }
+
     // A zero-to-one appearance needs more time than a conventional view
     // fade: the icon has to read as spreading from its own center. The
     // previous 0.20s cubic ease-out was already at 87.5% halfway through.
     static let insertionDuration: TimeInterval = 0.32
     static let removalDuration = insertionDuration
+    static let dropPlaceholderInsertionDuration: TimeInterval = 0.18
+    static let dropPlaceholderRemovalDuration: TimeInterval = 0.14
 
     let startValue: CGFloat
     let targetValue: CGFloat
     let startTime: CFTimeInterval
     let duration: TimeInterval
+    let profile: Profile
 
-    static func insertion(startTime: CFTimeInterval) -> Self {
-        transition(from: 0, to: 1, startTime: startTime)
+    static func insertion(
+        startTime: CFTimeInterval,
+        profile: Profile = .standard
+    ) -> Self {
+        transition(from: 0, to: 1, startTime: startTime, profile: profile)
     }
 
     static func transition(
         from startValue: CGFloat,
         to targetValue: CGFloat,
-        startTime: CFTimeInterval
+        startTime: CFTimeInterval,
+        profile: Profile = .standard
     ) -> Self {
         let clampedStart = min(1, max(0, startValue))
         let clampedTarget = min(1, max(0, targetValue))
         let distance = abs(clampedTarget - clampedStart)
         let isAppearing = clampedTarget >= clampedStart
-        let fullDuration = isAppearing ? insertionDuration : removalDuration
+        let fullDuration: TimeInterval
+        switch profile {
+        case .standard:
+            fullDuration = isAppearing ? insertionDuration : removalDuration
+        case .dropPlaceholder:
+            fullDuration = isAppearing
+                ? dropPlaceholderInsertionDuration
+                : dropPlaceholderRemovalDuration
+        }
         return Self(
             startValue: clampedStart,
             targetValue: clampedTarget,
             startTime: startTime,
-            duration: fullDuration * Double(distance)
+            duration: fullDuration * Double(distance),
+            profile: profile
         )
     }
 
     func value(at time: CFTimeInterval) -> CGFloat {
         guard duration > 0 else { return targetValue }
         let linear = min(1, max(0, (time - startTime) / duration))
-        // Appearance and removal deliberately share this curve so reversing
-        // direction preserves the same perceived speed in both directions.
-        let eased = 0.5 - 0.5 * cos(.pi * linear)
+        let eased: Double
+        switch profile {
+        case .standard:
+            // Appearance and removal deliberately share this curve so reversing
+            // direction preserves the same perceived speed in both directions.
+            eased = 0.5 - 0.5 * cos(.pi * linear)
+        case .dropPlaceholder:
+            // A drop target must visibly react on the first rendered frame.
+            let remaining = 1 - linear
+            eased = 1 - remaining * remaining * remaining
+        }
         return startValue + (targetValue - startValue) * CGFloat(eased)
     }
 
@@ -124,17 +153,13 @@ struct DockLaunchBounceTransition: Equatable {
     static let hopDurations: [TimeInterval] = [0.60, 0.40, 0.20]
     static let hopAmplitudeScales: [CGFloat] = [0.46, 0.27, 0.13]
     static let duration = hopDurations.reduce(0, +)
-    static let pauseBetweenCycles: TimeInterval = 0.32
-    static let cycleDuration = duration + pauseBetweenCycles
     static let maximumAmplitudeScale = hopAmplitudeScales.max() ?? 0
 
     let startTime: CFTimeInterval
 
     func offset(at time: CFTimeInterval, iconSize: CGFloat) -> CGFloat {
-        let elapsedSinceStart = max(0, time - startTime)
-        let cycleElapsed = elapsedSinceStart.truncatingRemainder(dividingBy: Self.cycleDuration)
-        guard cycleElapsed < Self.duration else { return 0 }
-        var elapsed = cycleElapsed
+        var elapsed = max(0, time - startTime)
+        guard elapsed < Self.duration else { return 0 }
 
         for (duration, amplitudeScale) in zip(
             Self.hopDurations,
@@ -151,9 +176,7 @@ struct DockLaunchBounceTransition: Equatable {
     }
 
     func isComplete(at time: CFTimeInterval) -> Bool {
-        // The model removes this transition when the application leaves its
-        // launching state. Keeping it alive lets slow launches keep bouncing.
-        false
+        time - startTime >= Self.duration
     }
 }
 
@@ -205,16 +228,19 @@ struct DockMagnificationLayout {
 
     private enum Element {
         case item(Int)
-        case separator
+        case separator(Int)
     }
 
     struct Result {
         let baseButtonFrames: [NSRect]
         let buttonFrames: [NSRect]
         let scales: [CGFloat]
-        let separatorFrame: NSRect?
-        let separatorScale: CGFloat?
+        let separatorFrames: [NSRect]
+        let separatorScales: [CGFloat]
         let visualContentFrame: NSRect
+
+        var separatorFrame: NSRect? { separatorFrames.first }
+        var separatorScale: CGFloat? { separatorScales.first }
 
         var peakScale: CGFloat {
             // The divider stays inside the resting strip height. Only actual
@@ -226,44 +252,52 @@ struct DockMagnificationLayout {
     static func baseContentWidth(
         itemCount: Int,
         pinnedItemCount: Int,
+        separatorIndices: Set<Int>? = nil,
         iconSize: CGFloat,
         spacing: CGFloat
     ) -> CGFloat {
         let validItemCount = max(0, itemCount)
-        let validPinnedItemCount = min(max(0, pinnedItemCount), validItemCount)
-        let hasSeparator = validPinnedItemCount > 0
-            && validPinnedItemCount < validItemCount
+        let separators = normalizedSeparatorIndices(
+            itemCount: validItemCount,
+            pinnedItemCount: pinnedItemCount,
+            separatorIndices: separatorIndices
+        )
         return CGFloat(validItemCount) * (iconSize + spacing)
-            + (hasSeparator ? separatorSpace : 0)
+            + CGFloat(separators.count) * separatorSpace
     }
 
     static func maximumRequiredWidth(
         itemCount: Int,
         pinnedItemCount: Int,
+        separatorIndices: Set<Int>? = nil,
         iconSize: CGFloat,
         spacing: CGFloat,
         maximumScale: CGFloat,
         influenceRange: CGFloat
     ) -> CGFloat {
         let validItemCount = max(0, itemCount)
-        let validPinnedItemCount = min(max(0, pinnedItemCount), validItemCount)
-        let hasSeparator = validPinnedItemCount > 0
-            && validPinnedItemCount < validItemCount
         let baseWidth = baseContentWidth(
             itemCount: itemCount,
             pinnedItemCount: pinnedItemCount,
+            separatorIndices: separatorIndices,
             iconSize: iconSize,
             spacing: spacing
         )
+        let separatorCount = normalizedSeparatorIndices(
+            itemCount: validItemCount,
+            pinnedItemCount: pinnedItemCount,
+            separatorIndices: separatorIndices
+        ).count
         let scaleDelta = max(0, maximumScale - 1)
         let maximumExpansion = iconSize * scaleDelta * max(1, influenceRange)
-            + (hasSeparator ? separatorSpace * scaleDelta : 0)
+            + CGFloat(separatorCount) * separatorSpace * scaleDelta
         return baseWidth + (maximumExpansion > 0 ? maximumExpansion + 8 : 0)
     }
 
     static func presentedRequiredWidth(
         itemPresenceProgresses: [CGFloat],
         hasSeparator: Bool,
+        separatorCount: Int? = nil,
         separatorPresenceProgress: CGFloat,
         iconSize: CGFloat,
         spacing: CGFloat,
@@ -276,15 +310,16 @@ struct DockMagnificationLayout {
         let separatorPresence = hasSeparator
             ? min(1, max(0, separatorPresenceProgress))
             : 0
+        let effectiveSeparatorCount = max(0, separatorCount ?? (hasSeparator ? 1 : 0))
         let baseWidth = itemPresence * (iconSize + spacing)
-            + separatorSpace * separatorPresence
+            + CGFloat(effectiveSeparatorCount) * separatorSpace * separatorPresence
         let scaleDelta = max(0, maximumScale - 1)
         let iconExpansionPresence = min(1, itemPresence)
         let maximumExpansion = iconSize
             * scaleDelta
             * max(1, influenceRange)
             * iconExpansionPresence
-            + separatorSpace * scaleDelta * separatorPresence
+            + CGFloat(effectiveSeparatorCount) * separatorSpace * scaleDelta * separatorPresence
         let overflowPadding = maximumExpansion > 0 ? 8 * iconExpansionPresence : 0
         return baseWidth + maximumExpansion + overflowPadding
     }
@@ -292,6 +327,7 @@ struct DockMagnificationLayout {
     static func make(
         itemCount: Int,
         pinnedItemCount: Int,
+        separatorIndices: Set<Int>? = nil,
         iconSize: CGFloat,
         spacing: CGFloat,
         maximumScale: CGFloat,
@@ -308,17 +344,22 @@ struct DockMagnificationLayout {
                 baseButtonFrames: [],
                 buttonFrames: [],
                 scales: [],
-                separatorFrame: nil,
-                separatorScale: nil,
+                separatorFrames: [],
+                separatorScales: [],
                 visualContentFrame: .zero
             )
         }
 
         let baseSlotWidth = iconSize + spacing
         let pinnedItemCount = min(max(0, pinnedItemCount), itemCount)
+        let separatorIndices = normalizedSeparatorIndices(
+            itemCount: itemCount,
+            pinnedItemCount: pinnedItemCount,
+            separatorIndices: separatorIndices
+        )
         let elements = makeElements(
             itemCount: itemCount,
-            pinnedItemCount: pinnedItemCount
+            separatorIndices: separatorIndices
         )
         let itemPresence = (0..<itemCount).map { index in
             min(1, max(0, itemPresenceProgresses?[safe: index] ?? 1))
@@ -393,8 +434,15 @@ struct DockMagnificationLayout {
 
         var frames = Array(repeating: NSRect.zero, count: itemCount)
         var scales = Array(repeating: CGFloat(1), count: itemCount)
-        var separatorSlotFrame: NSRect?
-        var separatorScale: CGFloat?
+        let sortedSeparatorIndices = separatorIndices.sorted()
+        var separatorSlotFrames: [NSRect?] = Array(
+            repeating: nil,
+            count: sortedSeparatorIndices.count
+        )
+        var separatorScales: [CGFloat?] = Array(
+            repeating: nil,
+            count: sortedSeparatorIndices.count
+        )
         var cursor = dynamicStart
         for index in elements.indices {
             let element = elements[index]
@@ -409,9 +457,11 @@ struct DockMagnificationLayout {
             case let .item(itemIndex):
                 frames[itemIndex] = frame
                 scales[itemIndex] = scale
-            case .separator:
-                separatorSlotFrame = frame
-                separatorScale = scale
+            case let .separator(separatorIndex):
+                if let slot = sortedSeparatorIndices.firstIndex(of: separatorIndex) {
+                    separatorSlotFrames[slot] = frame
+                    separatorScales[slot] = scale
+                }
             }
             cursor += dynamicElementWidths[index]
         }
@@ -420,12 +470,11 @@ struct DockMagnificationLayout {
             baseButtonFrames: baseFrames,
             buttonFrames: frames,
             scales: scales,
-            separatorFrame: separatorFrame(
-                slotFrame: separatorSlotFrame,
-                scale: separatorScale,
-                iconSize: iconSize
-            ),
-            separatorScale: separatorScale,
+            separatorFrames: zip(separatorSlotFrames, separatorScales).compactMap { pair in
+                guard let slotFrame = pair.0, let scale = pair.1 else { return nil }
+                return separatorFrame(slotFrame: slotFrame, scale: scale, iconSize: iconSize)
+            },
+            separatorScales: separatorScales.compactMap { $0 },
             visualContentFrame: NSRect(
                 x: dynamicStart,
                 y: 0,
@@ -481,18 +530,29 @@ struct DockMagnificationLayout {
 
     private static func makeElements(
         itemCount: Int,
-        pinnedItemCount: Int
+        separatorIndices: Set<Int>
     ) -> [Element] {
-        let hasSeparator = pinnedItemCount > 0 && pinnedItemCount < itemCount
         var elements: [Element] = []
-        elements.reserveCapacity(itemCount + (hasSeparator ? 1 : 0))
+        elements.reserveCapacity(itemCount + separatorIndices.count)
         for index in 0..<itemCount {
-            if hasSeparator, index == pinnedItemCount {
-                elements.append(.separator)
+            if separatorIndices.contains(index) {
+                elements.append(.separator(index))
             }
             elements.append(.item(index))
         }
         return elements
+    }
+
+    private static func normalizedSeparatorIndices(
+        itemCount: Int,
+        pinnedItemCount: Int,
+        separatorIndices: Set<Int>?
+    ) -> Set<Int> {
+        if let separatorIndices {
+            return Set(separatorIndices.filter { $0 > 0 && $0 < itemCount })
+        }
+        let boundary = min(max(0, pinnedItemCount), itemCount)
+        return boundary > 0 && boundary < itemCount ? [boundary] : []
     }
 
     private static func magnificationScale(

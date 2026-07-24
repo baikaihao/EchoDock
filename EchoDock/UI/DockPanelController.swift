@@ -63,6 +63,24 @@ enum DockRunningItemRemovalPolicy {
     }
 }
 
+enum DockFileShortcutRemovalPolicy {
+    static func removedIdentities(
+        previous: DockSnapshot,
+        next: DockSnapshot,
+        animationsEnabled: Bool
+    ) -> Set<ApplicationIdentity> {
+        guard animationsEnabled, previous.revision > 0 else { return [] }
+        let nextIdentities = Set(next.items.map(\.identity))
+        return Set(previous.items.compactMap { item in
+            guard item.kind.shortcutID != nil,
+                  !nextIdentities.contains(item.identity) else {
+                return nil
+            }
+            return item.identity
+        })
+    }
+}
+
 enum DockLaunchBouncePresentationPolicy {
     static func hasLaunchEdge(
         previous: DockSnapshot,
@@ -107,11 +125,10 @@ enum DockLaunchBouncePresentationPolicy {
 
 enum DockSampledPointerEntryPolicy {
     static func allowsEntry(
-        wasIgnoringMouseEvents: Bool,
         isInteractivePoint: Bool,
         pressedButtons: Int
     ) -> Bool {
-        wasIgnoringMouseEvents && isInteractivePoint && pressedButtons == 0
+        isInteractivePoint && pressedButtons == 0
     }
 }
 
@@ -127,8 +144,9 @@ final class DockPanelController {
     }
 
     private let panel = DockPanel()
+    private let dragReceiverPanel = DockPanel()
     private let tooltipPanelController = DockTooltipPanelController()
-    private let contentView = DockContentView()
+    private let contentView: DockContentView
     private let preferences: PreferencesStore
     private var descriptor: DisplayDescriptor
     private var state: DockPanelVisibilityState = .hidden
@@ -136,6 +154,10 @@ final class DockPanelController {
     private var hotZoneEnteredAt: Date?
     private var mouseLeftAt: Date?
     private var isContextMenuPresented = false
+    private var isFileDragDestinationActive = false
+    private var isFileDragCaptureActive = false
+    private var isFileDragCaptureRequested = false
+    private var fileDragCaptureRevision: UInt = 0
     private var animationGeneration: UInt64 = 0
     private var allDisplays: [DisplayDescriptor] = []
     private var hasAppliedExternalSnapshot = false
@@ -144,16 +166,20 @@ final class DockPanelController {
     init(
         descriptor: DisplayDescriptor,
         preferences: PreferencesStore,
+        iconProvider: ApplicationIconProvider = .shared,
         onItemAction: @escaping (DockItem) -> Void,
         onItemContextAction: @escaping (DockItem, DockItemContextAction) -> Void,
-        contextMenuStateProvider: @escaping (DockItem) -> DockItemContextMenuState
+        contextMenuStateProvider: @escaping (DockItem) -> DockItemContextMenuState,
+        onDropRequest: @escaping (DockDropRequest) -> Bool
     ) {
         self.displayIdentity = descriptor.identity
         self.descriptor = descriptor
         self.preferences = preferences
+        self.contentView = DockContentView(iconProvider: iconProvider)
         contentView.onItemAction = onItemAction
         contentView.onItemContextAction = onItemContextAction
         contentView.onItemContextMenuStateRequest = contextMenuStateProvider
+        contentView.onDropRequest = onDropRequest
         contentView.onContextMenuPresentationChange = { [weak self] presented in
             guard let self else { return }
             self.isContextMenuPresented = presented
@@ -171,7 +197,8 @@ final class DockPanelController {
             self.tooltipPanelController.present(presentation)
         }
         contentView.onPreferredSizeChange = { [weak self] size in
-            self?.resizePanel(to: size)
+            guard let self, !self.isFileDragDestinationActive else { return }
+            self.resizePanel(to: size)
         }
         contentView.onLaunchBounceActivityChange = { [weak self] isActive in
             guard let self else { return }
@@ -180,13 +207,31 @@ final class DockPanelController {
             // countdown only after the content view reports that it finished.
             self.mouseLeftAt = nil
         }
-        contentView.onPointerInteractionChange = { [weak self] isActive in
+        contentView.onPointerInteractionChange = { [weak self] _ in
             guard let self,
                   self.panel.isVisible,
+                  !self.isFileDragDestinationActive,
                   !self.isContextMenuPresented else { return }
-            let shouldIgnoreMouseEvents = !isActive
-            if self.panel.ignoresMouseEvents != shouldIgnoreMouseEvents {
-                self.panel.ignoresMouseEvents = shouldIgnoreMouseEvents
+            // The visible Dock is also the NSDraggingDestination for the file
+            // section. Making the whole window click-through prevents Finder
+            // from ever delivering draggingEntered when a drag begins outside
+            // EchoDock, so keep the destination in WindowServer's hit-test path.
+            self.panel.ignoresMouseEvents = false
+        }
+        contentView.onFileDragActivityChange = { [weak self] isActive in
+            guard let self else { return }
+            self.isFileDragDestinationActive = isActive
+            if isActive {
+                self.activateFileDragCapture()
+                self.panel.ignoresMouseEvents = false
+                self.mouseLeftAt = nil
+            }
+            self.resizePanel(to: self.contentView.frame.size)
+            if !isActive, !self.isFileDragCaptureRequested {
+                self.scheduleFileDragCaptureCollapse()
+            }
+            if self.panel.isVisible, !self.isContextMenuPresented {
+                self.panel.ignoresMouseEvents = false
             }
         }
         panel.onPointerEvent = { [weak self] event in
@@ -199,7 +244,53 @@ final class DockPanelController {
                 timestamp: event.timestamp
             )
         }
+        panel.onDraggingEntered = { [weak self] sender in
+            self?.contentView.draggingEntered(sender) ?? []
+        }
+        panel.onDraggingUpdated = { [weak self] sender in
+            self?.contentView.draggingUpdated(sender) ?? []
+        }
+        panel.onDraggingExited = { [weak self] sender in
+            self?.contentView.draggingExited(sender)
+        }
+        panel.onPrepareForDragOperation = { [weak self] sender in
+            self?.contentView.prepareForDragOperation(sender) ?? false
+        }
+        panel.onPerformDragOperation = { [weak self] sender in
+            self?.contentView.performDragOperation(sender) ?? false
+        }
+        panel.onConcludeDragOperation = { [weak self] sender in
+            self?.contentView.concludeDragOperation(sender)
+        }
+        panel.onDraggingEnded = { [weak self] sender in
+            self?.contentView.draggingEnded(sender)
+        }
         panel.contentView = contentView
+        dragReceiverPanel.level = NSWindow.Level(
+            rawValue: NSWindow.Level.statusBar.rawValue + 1
+        )
+        dragReceiverPanel.onDraggingEntered = { [weak self] sender in
+            self?.contentView.draggingEntered(sender) ?? []
+        }
+        dragReceiverPanel.onDraggingUpdated = { [weak self] sender in
+            self?.contentView.draggingUpdated(sender) ?? []
+        }
+        dragReceiverPanel.onDraggingExited = { [weak self] sender in
+            self?.contentView.draggingExited(sender)
+        }
+        dragReceiverPanel.onPrepareForDragOperation = { [weak self] sender in
+            self?.contentView.prepareForDragOperation(sender) ?? false
+        }
+        dragReceiverPanel.onPerformDragOperation = { [weak self] sender in
+            self?.contentView.performDragOperation(sender) ?? false
+        }
+        dragReceiverPanel.onConcludeDragOperation = { [weak self] sender in
+            self?.contentView.concludeDragOperation(sender)
+        }
+        dragReceiverPanel.onDraggingEnded = { [weak self] sender in
+            self?.contentView.draggingEnded(sender)
+        }
+        dragReceiverPanel.contentView = NSView(frame: .zero)
         applyLayout()
     }
 
@@ -243,11 +334,19 @@ final class DockPanelController {
                 && preferences.showRunningApplications
                 && !isContextMenuPresented
         )
+        let removedFileShortcutIdentities = DockFileShortcutRemovalPolicy.removedIdentities(
+            previous: self.snapshot,
+            next: snapshot,
+            animationsEnabled: itemTransitionAnimationsEnabled
+                && !isContextMenuPresented
+        )
         self.snapshot = snapshot
         hasAppliedExternalSnapshot = true
         applyLayout(
             animatedInsertionIdentities: insertedRunningIdentities,
-            animatedRemovalIdentities: removedRunningIdentities,
+            animatedRemovalIdentities: removedRunningIdentities.union(
+                removedFileShortcutIdentities
+            ),
             launchBounceAnimationsEnabled: launchBounceAnimationsEnabled
         )
     }
@@ -263,7 +362,15 @@ final class DockPanelController {
         }
     }
 
-    func processMouse(location: CGPoint, pressedButtons: Int, now: Date) {
+    func processMouse(
+        location: CGPoint,
+        pressedButtons: Int,
+        now: Date,
+        isFileDrag: Bool = false
+    ) {
+        updateFileDragCaptureRequest(
+            preferences.isEnabled && pressedButtons != 0
+        )
         guard preferences.isEnabled else {
             hide(animated: false)
             return
@@ -273,19 +380,36 @@ final class DockPanelController {
             mouseLeftAt = nil
             return
         }
+        let hasActiveFileDrag = isFileDrag
+            || isFileDragDestinationActive
+            || isFileDragCaptureActive
+        let hasPotentialPointerDrag = pressedButtons != 0
+        let shouldHoldForDrag = hasActiveFileDrag || hasPotentialPointerDrag
         var allowsSyntheticPointerEntry = false
-        if panel.isVisible, pressedButtons == 0 {
-            let wasIgnoringMouseEvents = panel.ignoresMouseEvents
+        if panel.isVisible, hasPotentialPointerDrag {
+            // A cross-process drag is not guaranteed to expose its payload on
+            // the global drag pasteboard. Let the registered destination
+            // inspect NSDraggingInfo instead of leaving the panel click-through.
+            panel.ignoresMouseEvents = false
+            mouseLeftAt = nil
+        }
+        if panel.isVisible, pressedButtons == 0, !hasActiveFileDrag {
             let isInteractivePoint = contentView.shouldReceiveMouse(at: location)
-            let shouldIgnoreMouseEvents = !isInteractivePoint
-            if panel.ignoresMouseEvents != shouldIgnoreMouseEvents {
-                panel.ignoresMouseEvents = shouldIgnoreMouseEvents
-            }
+            panel.ignoresMouseEvents = false
             allowsSyntheticPointerEntry = DockSampledPointerEntryPolicy.allowsEntry(
-                wasIgnoringMouseEvents: wasIgnoringMouseEvents,
                 isInteractivePoint: isInteractivePoint,
                 pressedButtons: pressedButtons
             )
+        }
+        if hasActiveFileDrag, panel.isVisible {
+            panel.ignoresMouseEvents = false
+            mouseLeftAt = nil
+        }
+        if isFileDragDestinationActive, hasPotentialPointerDrag {
+            let isOutsideDragContinuationFrame = !panel.frame.contains(location)
+            if isOutsideDragContinuationFrame {
+                contentView.cancelFileDrag()
+            }
         }
         if state.allowsTooltipPresentation {
             if panel.isVisible {
@@ -318,7 +442,7 @@ final class DockPanelController {
 
         switch state {
         case .hidden, .hiding:
-            guard pressedButtons == 0, isInHotZone(location) else {
+            guard isInHotZone(location) else {
                 hotZoneEnteredAt = nil
                 return
             }
@@ -326,12 +450,17 @@ final class DockPanelController {
                 hotZoneEnteredAt = now
             }
             let requiredDelay = isInternalBottomEdge(atX: location.x) ? preferences.internalEdgeDelay : 0
-            if now.timeIntervalSince(hotZoneEnteredAt ?? now) >= requiredDelay {
+            if shouldHoldForDrag
+                || now.timeIntervalSince(hotZoneEnteredAt ?? now) >= requiredDelay {
                 show(always: false, animated: true)
                 hotZoneEnteredAt = nil
             }
 
         case .showing, .visible:
+            if shouldHoldForDrag {
+                mouseLeftAt = nil
+                return
+            }
             if panel.frame.insetBy(dx: -8, dy: -8).contains(location) {
                 mouseLeftAt = nil
             } else {
@@ -349,12 +478,31 @@ final class DockPanelController {
 
     func destroy() {
         animationGeneration &+= 1
+        fileDragCaptureRevision &+= 1
+        contentView.cancelFileDrag()
+        panel.ignoresMouseEvents = false
         contentView.resetInteraction()
         isContextMenuPresented = false
         tooltipPanelController.hide()
+        dragReceiverPanel.orderOut(nil)
         panel.orderOut(nil)
         panel.onPointerEvent = nil
+        panel.onDraggingEntered = nil
+        panel.onDraggingUpdated = nil
+        panel.onDraggingExited = nil
+        panel.onPrepareForDragOperation = nil
+        panel.onPerformDragOperation = nil
+        panel.onConcludeDragOperation = nil
+        panel.onDraggingEnded = nil
         panel.contentView = nil
+        dragReceiverPanel.onDraggingEntered = nil
+        dragReceiverPanel.onDraggingUpdated = nil
+        dragReceiverPanel.onDraggingExited = nil
+        dragReceiverPanel.onPrepareForDragOperation = nil
+        dragReceiverPanel.onPerformDragOperation = nil
+        dragReceiverPanel.onConcludeDragOperation = nil
+        dragReceiverPanel.onDraggingEnded = nil
+        dragReceiverPanel.contentView = nil
     }
 
     private func applyLayout(
@@ -380,12 +528,18 @@ final class DockPanelController {
             runningIndicatorsEnabled: preferences.runningIndicatorsEnabled
         )
         let size = contentView.frame.size
-        let origin = NSPoint(
-            x: descriptor.frame.midX - size.width / 2,
-            y: descriptor.frame.minY + 6
-        )
         let shouldDisplay = panel.isVisible
-        panel.setFrame(NSRect(origin: origin, size: size), display: false)
+        if isFileDragDestinationActive {
+            contentView.needsLayout = true
+            contentView.layoutSubtreeIfNeeded()
+        } else {
+            let originX = descriptor.frame.midX - size.width / 2
+            let origin = NSPoint(
+                x: originX,
+                y: descriptor.frame.minY + 6
+            )
+            panel.setFrame(NSRect(origin: origin, size: size), display: false)
+        }
         if shouldDisplay, state.allowsTooltipPresentation {
             contentView.reconcilePointer(screenLocation: NSEvent.mouseLocation)
         }
@@ -433,6 +587,7 @@ final class DockPanelController {
         animationGeneration &+= 1
         let generation = animationGeneration
         state = .hiding
+        contentView.cancelFileDrag()
         panel.ignoresMouseEvents = false
         contentView.resetInteraction()
         isContextMenuPresented = false
@@ -474,8 +629,9 @@ final class DockPanelController {
 
     private func resizePanel(to size: NSSize) {
         guard size.width > 0, size.height > 0 else { return }
+        let originX = descriptor.frame.midX - size.width / 2
         let targetFrame = NSRect(
-            x: descriptor.frame.midX - size.width / 2,
+            x: originX,
             y: descriptor.frame.minY + 6,
             width: size.width,
             height: size.height
@@ -483,12 +639,68 @@ final class DockPanelController {
         guard !NSEqualRects(panel.frame, targetFrame) else { return }
         let shouldDisplay = panel.isVisible
         panel.setFrame(targetFrame, display: false)
+        if isFileDragDestinationActive {
+            contentView.needsLayout = true
+            contentView.layoutSubtreeIfNeeded()
+        }
         if shouldDisplay, state.allowsTooltipPresentation {
             contentView.reconcilePointer(screenLocation: NSEvent.mouseLocation)
         }
         if shouldDisplay {
             panel.displayIfNeeded()
         }
+    }
+
+    private func updateFileDragCaptureRequest(_ requested: Bool) {
+        guard isFileDragCaptureRequested != requested else { return }
+        isFileDragCaptureRequested = requested
+        if requested {
+            activateFileDragCapture()
+        } else {
+            scheduleFileDragCaptureCollapse()
+        }
+    }
+
+    private func activateFileDragCapture() {
+        fileDragCaptureRevision &+= 1
+        guard !isFileDragCaptureActive else { return }
+
+        isFileDragCaptureActive = true
+        dragReceiverPanel.setFrame(fileDragReceiverFrame, display: false)
+        dragReceiverPanel.orderFrontRegardless()
+    }
+
+    private func scheduleFileDragCaptureCollapse() {
+        fileDragCaptureRevision &+= 1
+        let revision = fileDragCaptureRevision
+        // Mouse-up can precede AppKit's prepare/perform callbacks. Keep the
+        // destination stable briefly so release never collapses it first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self,
+                  self.fileDragCaptureRevision == revision,
+                  !self.isFileDragCaptureRequested,
+                  !self.isFileDragDestinationActive else { return }
+
+            self.isFileDragCaptureActive = false
+            self.dragReceiverPanel.orderOut(nil)
+        }
+    }
+
+    private var fileDragReceiverFrame: NSRect {
+        let maximumWidth = max(160, descriptor.frame.width - 24)
+        let iconSpacing = min(28, max(4, preferences.iconSpacing))
+        let reservedWidth = min(
+            maximumWidth,
+            panel.frame.width + preferences.iconSize + iconSpacing
+        )
+        let bodyTop = panel.frame.minY
+            + min(contentView.dockBodyHeight, panel.frame.height)
+        return NSRect(
+            x: descriptor.frame.midX - reservedWidth / 2,
+            y: descriptor.frame.minY,
+            width: reservedWidth,
+            height: max(1, bodyTop - descriptor.frame.minY)
+        )
     }
 
     private func isInternalBottomEdge(atX x: CGFloat) -> Bool {

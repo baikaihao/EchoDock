@@ -188,6 +188,10 @@ struct LaunchAttemptGenerationGate {
         activeGenerations[identity] == generation
     }
 
+    func activeGeneration(for identity: ApplicationIdentity) -> UInt64? {
+        activeGenerations[identity]
+    }
+
     @discardableResult
     mutating func invalidate(_ generation: UInt64, for identity: ApplicationIdentity) -> Bool {
         guard activeGenerations[identity] == generation else { return false }
@@ -242,6 +246,9 @@ final class DockModelController {
     private let applicationWindowService: ApplicationWindowControlling
     private let runningApplicationsProvider: () -> [NSRunningApplication]
     private let isControllableRunningApplication: (NSRunningApplication) -> Bool
+    private let fileShortcutStore: DockFileShortcutStore
+    private let fileOperator: DockFileOperator
+    private let trashUndoService: TrashUndoService
 
     private var pinnedApplications: [PinnedApplication] = []
     private var syncStatus: DockSyncStatus = .unavailable(L10n.text("dock.sync.notSynced"))
@@ -273,7 +280,10 @@ final class DockModelController {
         activationService: RunningApplicationActivationService? = nil,
         applicationWindowService: ApplicationWindowControlling? = nil,
         runningApplicationsProvider: (() -> [NSRunningApplication])? = nil,
-        isControllableRunningApplication: ((NSRunningApplication) -> Bool)? = nil
+        isControllableRunningApplication: ((NSRunningApplication) -> Bool)? = nil,
+        fileShortcutStore: DockFileShortcutStore? = nil,
+        fileOperator: DockFileOperator? = nil,
+        trashUndoService: TrashUndoService? = nil
     ) {
         self.preferencesReader = preferencesReader
         self.metadataResolver = metadataResolver
@@ -292,6 +302,11 @@ final class DockModelController {
             ?? { workspace.runningApplications }
         self.isControllableRunningApplication = isControllableRunningApplication
             ?? { $0.activationPolicy == .regular }
+        let shortcutStore = fileShortcutStore ?? DockFileShortcutStore()
+        self.fileShortcutStore = shortcutStore
+        self.fileOperator = fileOperator ?? DockFileOperator(workspace: workspace)
+        self.trashUndoService = trashUndoService
+            ?? TrashUndoService(shortcutStore: shortcutStore)
     }
 
     func start() {
@@ -320,6 +335,10 @@ final class DockModelController {
 
         runningMonitor.start()
         preferenceMonitor.start()
+        trashUndoService.onUndoCompletion = { [weak self] in
+            Task { @MainActor [weak self] in self?.publishIfNeeded() }
+        }
+        trashUndoService.start()
         refreshDockItems()
     }
 
@@ -338,6 +357,8 @@ final class DockModelController {
         systemLaunchPulseGenerations.removeAll()
         transientStateByIdentity.removeAll()
         launchGenerationGate.invalidateAll()
+        trashUndoService.stop()
+        trashUndoService.onUndoCompletion = nil
         preferenceMonitor.stop()
         runningMonitor.onChange = nil
         runningMonitor.onApplicationWillLaunch = nil
@@ -354,11 +375,28 @@ final class DockModelController {
     }
 
     func performPrimaryAction(for item: DockItem) {
+        switch item.kind {
+        case .fileShortcut(_, _, let isAvailable):
+            if isAvailable {
+                _ = workspace.open(item.applicationURL)
+            } else {
+                NSSound.beep()
+            }
+            return
+        case .trash:
+            _ = workspace.open(item.applicationURL)
+            return
+        case .dropPlaceholder:
+            return
+        case .application:
+            break
+        }
         cancelHideVerification(for: item.identity)
-        if item.isRunning {
-            activateRunningApplication(item)
-        } else {
+        let applications = currentRunningApplications(for: item)
+        if applications.isEmpty {
             launchApplication(item)
+        } else {
+            activateRunningApplication(item, candidates: applications)
         }
     }
 
@@ -401,7 +439,7 @@ final class DockModelController {
     }
 
     func contextMenuState(for item: DockItem) -> DockItemContextMenuState {
-        guard item.isRunning else { return .unavailable }
+        guard item.kind.isApplication, item.isRunning else { return .unavailable }
         let processIdentifiers = preferredProcessIdentifiers(for: item)
         let hasPermission = applicationWindowService.hasAccessibilityPermission
         return DockItemContextMenuState(
@@ -420,6 +458,10 @@ final class DockModelController {
             workspace.activateFileViewerSelecting([item.applicationURL])
 
         case .open:
+            guard item.kind.isApplication else {
+                _ = workspace.open(item.applicationURL)
+                return
+            }
             let applications = currentRunningApplications(for: item)
             if applications.isEmpty {
                 launchApplication(item)
@@ -500,6 +542,54 @@ final class DockModelController {
                 )
             }
             runningMonitor.reconcile()
+
+        case .removeShortcut:
+            guard let shortcutID = item.kind.shortcutID else { return }
+            let snapshots = fileShortcutStore.snapshots(for: [shortcutID])
+            if fileShortcutStore.remove(shortcutIDs: [shortcutID]) {
+                trashUndoService.recordShortcutRemoval(snapshots)
+                publishIfNeeded()
+            }
+        }
+    }
+
+    @discardableResult
+    func handleDrop(_ request: DockDropRequest) -> Bool {
+        switch request.destination {
+        case let .shortcuts(index):
+            let changed: Bool
+            if request.sourceShortcutIDs.isEmpty {
+                changed = fileShortcutStore.insert(
+                    fileURLs: request.fileURLs,
+                    at: index
+                )
+            } else {
+                changed = fileShortcutStore.move(
+                    shortcutIDs: request.sourceShortcutIDs,
+                    to: index
+                )
+            }
+            if changed { publishIfNeeded() }
+            return changed
+
+        case .trash:
+            if !request.sourceShortcutIDs.isEmpty {
+                let snapshots = fileShortcutStore.snapshots(
+                    for: request.sourceShortcutIDs
+                )
+                let changed = fileShortcutStore.remove(
+                    shortcutIDs: request.sourceShortcutIDs
+                )
+                if changed {
+                    trashUndoService.recordShortcutRemoval(snapshots)
+                    publishIfNeeded()
+                }
+                return changed
+            }
+
+            guard !request.fileURLs.isEmpty else { return false }
+            recycleDroppedFiles(request)
+            return true
         }
     }
 
@@ -551,7 +641,8 @@ final class DockModelController {
             pinnedApplications: pinnedApplications,
             runningApplications: runningMonitor.records,
             showRunningApplications: preferences.showRunningApplications,
-            transientStates: transientStateByIdentity
+            transientStates: transientStateByIdentity,
+            fileShortcuts: fileShortcutStore.resolvedShortcuts
         )
         let items = buildResult.items
         let pinnedItemCount = buildResult.pinnedItemCount
@@ -577,6 +668,40 @@ final class DockModelController {
             syncStatus: syncStatus
         )
         onSnapshotChange?(snapshot)
+    }
+
+    private func recycleDroppedFiles(_ request: DockDropRequest) {
+        let shortcutSnapshots = fileShortcutStore.snapshots(
+            for: request.sourceShortcutIDs
+        )
+        fileOperator.recycle(request.fileURLs) { [weak self] result in
+            guard let self else { return }
+            let recycledPaths = Set(result.recycledURLs.keys.map {
+                $0.standardizedFileURL.path
+            })
+            let recycledSnapshots = shortcutSnapshots.filter {
+                recycledPaths.contains($0.originalURL.standardizedFileURL.path)
+            }
+            if !recycledSnapshots.isEmpty {
+                _ = self.fileShortcutStore.remove(
+                    shortcutIDs: recycledSnapshots.map { $0.record.id }
+                )
+            }
+            self.trashUndoService.record(
+                recycledURLs: result.recycledURLs,
+                shortcutSnapshots: recycledSnapshots
+            )
+            if !result.recycledURLs.isEmpty {
+                self.publishIfNeeded()
+            }
+            if result.errorDescription != nil || result.recycledURLs.isEmpty {
+                self.showTemporaryFailure(
+                    result.errorDescription ?? L10n.text("dock.error.unableTrash"),
+                    identity: ApplicationIdentity(rawValue: "system:trash")
+                )
+                NSSound.beep()
+            }
+        }
     }
 
     private func activateRunningApplication(
@@ -681,9 +806,10 @@ final class DockModelController {
             }
         }
 
-        let completedLaunches = launchCompletionGenerations.compactMap {
-            identity, generation in
-            runningIdentities.contains(identity) ? (identity, generation) : nil
+        let completedLaunches = runningIdentities.compactMap { identity in
+            launchGenerationGate.activeGeneration(for: identity).map {
+                (identity, $0)
+            }
         }
         for (identity, generation) in completedLaunches {
             completeLaunch(for: identity, generation: generation)

@@ -1,8 +1,41 @@
 import AppKit
+import CoreImage
 
 enum DockRunningIndicatorPresentationPolicy {
     static func isVisible(isRunning: Bool, isEnabled: Bool) -> Bool {
         isEnabled && isRunning
+    }
+}
+
+private enum DockTrashIconProvider {
+    private static let emptyResourcePath = "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/TrashIcon.icns"
+    private static let fullResourcePath = "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/FullTrashIcon.icns"
+
+    static func image(for trashURL: URL) -> NSImage? {
+        let isFull = hasContents(at: trashURL)
+        let appKitName = isFull ? "NSTrashFull" : "NSTrashEmpty"
+
+        // These names are the AppKit-provided versions used by Finder/Dock.
+        if let image = NSImage(named: NSImage.Name(appKitName)) {
+            return image
+        }
+
+        // Keep the native CoreTypes artwork available on systems where the
+        // AppKit name is not registered in the process image catalog.
+        let resourcePath = isFull ? fullResourcePath : emptyResourcePath
+        return NSImage(contentsOfFile: resourcePath)
+    }
+
+    private static func hasContents(at trashURL: URL) -> Bool {
+        guard let enumerator = FileManager.default.enumerator(
+            at: trashURL,
+            includingPropertiesForKeys: nil,
+            options: [.skipsSubdirectoryDescendants],
+            errorHandler: { _, _ in false }
+        ) else {
+            return false
+        }
+        return enumerator.nextObject() != nil
     }
 }
 
@@ -44,7 +77,7 @@ struct DockContextMenuPlacement {
     }
 }
 
-final class DockItemButton: NSButton {
+final class DockItemButton: NSButton, NSDraggingSource {
     var onPress: ((DockItem) -> Void)?
     var onContextAction: ((DockItem, DockItemContextAction) -> Void)?
     var onContextMenuPresentationChange: ((DockItemButton, Bool) -> Void)?
@@ -63,6 +96,8 @@ final class DockItemButton: NSButton {
     private var launchBounceOffset: CGFloat = 0
     private var activeContextMenu: NSMenu?
     private var isContextMenuPresented = false
+    private var isTrackingFileDrag = false
+    private var isDropTargeted = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -124,9 +159,17 @@ final class DockItemButton: NSButton {
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) {
             presentContextMenu(for: event)
+        } else if item?.kind.shortcutID != nil {
+            trackFileMouseDown(event)
         } else {
             super.mouseDown(with: event)
         }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        super.mouseDragged(with: event)
+        guard item?.kind.shortcutID != nil, !isTrackingFileDrag else { return }
+        beginFileDrag(with: event)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -156,9 +199,27 @@ final class DockItemButton: NSButton {
         iconProvider: ApplicationIconProvider,
         showsRunningIndicator: Bool = true
     ) {
+        let canReuseCurrentImage = self.item?.identity == item.identity
+            && self.item?.kind == item.kind
+            && self.item?.applicationURL.standardizedFileURL
+                == item.applicationURL.standardizedFileURL
+            && iconImageView.image != nil
         self.item = item
         self.iconSize = iconSize
-        iconImageView.image = iconProvider.icon(for: item.applicationURL, size: iconSize)
+        switch item.kind {
+        case .application, .fileShortcut:
+            if !canReuseCurrentImage {
+                iconImageView.image = iconProvider.icon(
+                    for: item.applicationURL,
+                    size: iconSize
+                )
+            }
+        case .trash:
+            iconImageView.image = DockTrashIconProvider.image(for: item.applicationURL)
+            iconImageView.image?.size = NSSize(width: iconSize, height: iconSize)
+        case .dropPlaceholder:
+            iconImageView.image = nil
+        }
         // Use DockContentView's native-looking capsule instead of AppKit's
         // default tooltip, which can truncate names to "Xco…".
         toolTip = nil
@@ -176,7 +237,28 @@ final class DockItemButton: NSButton {
         case .failed:
             failureImageView.isHidden = false
         }
+        if case let .fileShortcut(_, _, isAvailable) = item.kind, !isAvailable {
+            failureImageView.isHidden = false
+        }
+        if item.kind == .dropPlaceholder {
+            runningIndicator.isHidden = true
+            failureImageView.isHidden = true
+        }
+        setDropTargeted(false)
         needsLayout = true
+    }
+
+    func setDropTargeted(_ targeted: Bool) {
+        guard isDropTargeted != targeted else { return }
+        isDropTargeted = targeted
+        guard item?.kind == .trash else { return }
+        if targeted {
+            let filter = CIFilter(name: "CIColorControls")
+            filter?.setValue(-0.34, forKey: kCIInputBrightnessKey)
+            layer?.filters = filter.map { [$0] }
+        } else {
+            layer?.filters = nil
+        }
     }
 
     func cancelContextMenu() {
@@ -426,6 +508,79 @@ final class DockItemButton: NSButton {
         onContextMenuPresentationChange?(self, presented)
     }
 
+    private func trackFileMouseDown(_ event: NSEvent) {
+        guard let window, let item, item.kind.shortcutID != nil else { return }
+        isTrackingFileDrag = true
+        defer { isTrackingFileDrag = false }
+        let start = event.locationInWindow
+        while let next = window.nextEvent(matching: [
+            .leftMouseDragged,
+            .leftMouseUp,
+            .mouseMoved
+        ]) {
+            switch next.type {
+            case .leftMouseDragged:
+                let point = next.locationInWindow
+                if hypot(point.x - start.x, point.y - start.y) >= 4 {
+                    beginFileDrag(with: next)
+                    return
+                }
+            case .leftMouseUp:
+                onPress?(item)
+                return
+            default:
+                continue
+            }
+        }
+    }
+
+    private func beginFileDrag(with event: NSEvent) {
+        guard let item,
+              let shortcutID = item.kind.shortcutID,
+              case let .fileShortcut(_, _, isAvailable) = item.kind,
+              isAvailable,
+              let icon = iconImageView.image else { return }
+        let pasteboardItem = NSPasteboardItem()
+        let payload = DockInternalShortcutDrag(
+            shortcutID: shortcutID,
+            fileURL: item.applicationURL
+        )
+        if let data = try? JSONEncoder().encode(payload) {
+            pasteboardItem.setData(data, forType: .echoDockInternalShortcut)
+        }
+        pasteboardItem.setString(
+            item.applicationURL.absoluteString,
+            forType: .fileURL
+        )
+        let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+        draggingItem.setDraggingFrame(
+            iconImageView.convert(iconImageView.bounds, to: self),
+            contents: icon
+        )
+        _ = beginDraggingSession(with: [draggingItem], event: event, source: self)
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        sourceOperationMaskFor draggingContext: NSDraggingContext
+    ) -> NSDragOperation {
+        [.copy, .move, .delete]
+    }
+
+    func draggingSession(
+        _ session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        operation: NSDragOperation
+    ) {
+        isTrackingFileDrag = false
+    }
+
+}
+
+extension NSPasteboard.PasteboardType {
+    static let echoDockInternalShortcut = NSPasteboard.PasteboardType(
+        "com.baikaihao.EchoDock.internal-file-shortcut"
+    )
 }
 
 private final class DockItemContextMenuInvocation: NSObject {

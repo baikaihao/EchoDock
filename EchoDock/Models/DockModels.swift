@@ -29,6 +29,10 @@ enum DockBackgroundStyleAvailability {
 struct ApplicationIdentity: Hashable, Codable, Sendable {
     let rawValue: String
 
+    init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
     init(bundleIdentifier: String?, applicationURL: URL?) {
         if let bundleIdentifier, !bundleIdentifier.isEmpty {
             rawValue = "bundle:\(bundleIdentifier.lowercased())"
@@ -61,6 +65,24 @@ struct RunningApplicationRecord: Equatable {
 enum DockItemSection: String, Codable, Sendable {
     case pinned
     case running
+    case files
+}
+
+enum DockItemKind: Equatable, Sendable {
+    case application
+    case fileShortcut(id: UUID, isDirectory: Bool, isAvailable: Bool)
+    case trash
+    case dropPlaceholder
+
+    var isApplication: Bool {
+        if case .application = self { return true }
+        return false
+    }
+
+    var shortcutID: UUID? {
+        guard case let .fileShortcut(id, _, _) = self else { return nil }
+        return id
+    }
 }
 
 enum DockItemTransientState: Equatable {
@@ -77,10 +99,35 @@ struct DockItem: Equatable, Identifiable {
     let applicationURL: URL
     let displayName: String
     let section: DockItemSection
+    let kind: DockItemKind
     let isRunning: Bool
     let isActive: Bool
     let isHidden: Bool
     let transientState: DockItemTransientState
+
+    init(
+        identity: ApplicationIdentity,
+        bundleIdentifier: String?,
+        applicationURL: URL,
+        displayName: String,
+        section: DockItemSection,
+        kind: DockItemKind = .application,
+        isRunning: Bool,
+        isActive: Bool,
+        isHidden: Bool,
+        transientState: DockItemTransientState
+    ) {
+        self.identity = identity
+        self.bundleIdentifier = bundleIdentifier
+        self.applicationURL = applicationURL
+        self.displayName = displayName
+        self.section = section
+        self.kind = kind
+        self.isRunning = isRunning
+        self.isActive = isActive
+        self.isHidden = isHidden
+        self.transientState = transientState
+    }
 }
 
 enum DockItemContextAction: Int, Equatable, Sendable {
@@ -91,6 +138,7 @@ enum DockItemContextAction: Int, Equatable, Sendable {
     case show
     case hide
     case quit
+    case removeShortcut
 }
 
 struct DockItemContextMenuState: Equatable {
@@ -135,6 +183,49 @@ enum DockItemContextMenuBuilder {
         for item: DockItem,
         state: DockItemContextMenuState = .unavailable
     ) -> DockItemContextMenuModel {
+        switch item.kind {
+        case .fileShortcut(_, _, let isAvailable):
+            return DockItemContextMenuModel(
+                options: [
+                    DockItemContextMenuCommand(
+                        action: .revealInFinder,
+                        title: L10n.text("dock.menu.revealInFinder"),
+                        isEnabled: isAvailable
+                    )
+                ],
+                commands: [
+                    DockItemContextMenuCommand(
+                        action: .open,
+                        title: L10n.text("dock.menu.open"),
+                        isEnabled: isAvailable
+                    ),
+                    DockItemContextMenuCommand(
+                        action: .removeShortcut,
+                        title: L10n.text("dock.menu.removeShortcut"),
+                        isEnabled: true
+                    )
+                ]
+            )
+
+        case .trash:
+            return DockItemContextMenuModel(
+                options: [],
+                commands: [
+                    DockItemContextMenuCommand(
+                        action: .open,
+                        title: L10n.text("dock.menu.open"),
+                        isEnabled: true
+                    )
+                ]
+            )
+
+        case .dropPlaceholder:
+            return DockItemContextMenuModel(options: [], commands: [])
+
+        case .application:
+            break
+        }
+
         let reveal = DockItemContextMenuCommand(
             action: .revealInFinder,
             title: L10n.text("dock.menu.revealInFinder"),
@@ -192,6 +283,22 @@ enum DockItemContextMenuBuilder {
     static func isFinder(_ item: DockItem) -> Bool {
         item.bundleIdentifier?.caseInsensitiveCompare("com.apple.finder") == .orderedSame
     }
+}
+
+enum DockDropDestination: Equatable, Sendable {
+    case shortcuts(index: Int)
+    case trash
+}
+
+struct DockInternalShortcutDrag: Equatable, Codable, Sendable {
+    let shortcutID: UUID
+    let fileURL: URL
+}
+
+struct DockDropRequest: Equatable, Sendable {
+    let fileURLs: [URL]
+    let sourceShortcutIDs: [UUID]
+    let destination: DockDropDestination
 }
 
 enum DockSyncStatus: Equatable {

@@ -2,12 +2,14 @@ import AppKit
 
 @MainActor
 final class MouseEdgeMonitor: NSObject {
-    var onSample: ((CGPoint, Int, Date) -> Void)?
+    var onSample: ((CGPoint, Int, Date, Bool) -> Void)?
     var needsImmediateMovementSample: (() -> Bool)?
 
     private var timer: Timer?
     private var globalMovementMonitor: Any?
     private var localMovementMonitor: Any?
+    private var dragPasteboardChangeCount = -1
+    private var dragPasteboardContainsFiles = false
 
     func start() {
         guard timer == nil else { return }
@@ -22,14 +24,14 @@ final class MouseEdgeMonitor: NSObject {
         self.timer = timer
 
         globalMovementMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: .mouseMoved
+            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.sampleMovementIfNeeded()
             }
         }
         localMovementMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: .mouseMoved
+            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
         ) { [weak self] event in
             Task { @MainActor [weak self] in
                 self?.sampleMovementIfNeeded()
@@ -55,12 +57,37 @@ final class MouseEdgeMonitor: NSObject {
     }
 
     @objc private func sampleMouse() {
-        onSample?(NSEvent.mouseLocation, NSEvent.pressedMouseButtons, Date())
+        publishSample(isFileDrag: isFileDragInProgress)
+    }
+
+    private func publishSample(isFileDrag: Bool) {
+        onSample?(
+            NSEvent.mouseLocation,
+            NSEvent.pressedMouseButtons,
+            Date(),
+            isFileDrag
+        )
+    }
+
+    private var isFileDragInProgress: Bool {
+        guard NSEvent.pressedMouseButtons != 0 else { return false }
+        let pasteboard = NSPasteboard(name: .drag)
+        if pasteboard.changeCount != dragPasteboardChangeCount {
+            dragPasteboardChangeCount = pasteboard.changeCount
+            dragPasteboardContainsFiles = pasteboard.canReadObject(
+                forClasses: [NSURL.self],
+                options: [.urlReadingFileURLsOnly: true]
+            ) || pasteboard.types?.contains(.echoDockInternalShortcut) == true
+        }
+        return dragPasteboardContainsFiles
     }
 
     private func sampleMovementIfNeeded() {
-        guard needsImmediateMovementSample?() == true else { return }
-        sampleMouse()
+        let isFileDrag = isFileDragInProgress
+        guard needsImmediateMovementSample?() == true || isFileDrag else {
+            return
+        }
+        publishSample(isFileDrag: isFileDrag)
     }
 
     private func removeMovementMonitors() {

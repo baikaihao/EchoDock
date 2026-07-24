@@ -2,8 +2,8 @@ import AppKit
 
 @MainActor
 final class AboutWindowController: NSWindowController {
-    private static let fallbackVersion = "1.0.0"
-    private static let fallbackBuild = "1"
+    private static let fallbackVersion = "1.0.1"
+    private static let fallbackBuild = "20260724"
 
     init(bundle: Bundle = .main) {
         let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 270))

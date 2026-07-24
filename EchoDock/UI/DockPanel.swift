@@ -2,6 +2,13 @@ import AppKit
 
 final class DockPanel: NSPanel {
     var onPointerEvent: ((NSEvent) -> Void)?
+    var onDraggingEntered: ((NSDraggingInfo) -> NSDragOperation)?
+    var onDraggingUpdated: ((NSDraggingInfo) -> NSDragOperation)?
+    var onDraggingExited: ((NSDraggingInfo?) -> Void)?
+    var onPrepareForDragOperation: ((NSDraggingInfo) -> Bool)?
+    var onPerformDragOperation: ((NSDraggingInfo) -> Bool)?
+    var onConcludeDragOperation: ((NSDraggingInfo?) -> Void)?
+    var onDraggingEnded: ((NSDraggingInfo) -> Void)?
 
     init() {
         super.init(
@@ -25,10 +32,43 @@ final class DockPanel: NSPanel {
         isMovableByWindowBackground = false
         animationBehavior = .none
         isReleasedWhenClosed = false
+        registerForDraggedTypes([.fileURL, .echoDockInternalShortcut])
     }
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
+
+    @objc func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        onDraggingEntered?(sender) ?? []
+    }
+
+    @objc func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        onDraggingUpdated?(sender) ?? []
+    }
+
+    @objc func draggingExited(_ sender: NSDraggingInfo?) {
+        onDraggingExited?(sender)
+    }
+
+    @objc func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onPrepareForDragOperation?(sender) ?? false
+    }
+
+    @objc func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onPerformDragOperation?(sender) ?? false
+    }
+
+    @objc func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        onConcludeDragOperation?(sender)
+    }
+
+    @objc func draggingEnded(_ sender: NSDraggingInfo) {
+        onDraggingEnded?(sender)
+    }
+
+    @objc func wantsPeriodicDraggingUpdates() -> Bool {
+        false
+    }
 
     override func sendEvent(_ event: NSEvent) {
         if DockPointerEventRouting.shouldForward(event.type) {

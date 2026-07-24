@@ -5,15 +5,25 @@ final class DisplayCoordinator {
     private let topologyProvider: DisplayTopologyProvider
     private let preferences: PreferencesStore
     private let mouseMonitor: MouseEdgeMonitor
+    private let iconProvider: ApplicationIconProvider
     private let onItemAction: (DockItem) -> Void
     private let onItemContextAction: (DockItem, DockItemContextAction) -> Void
     private let contextMenuStateProvider: (DockItem) -> DockItemContextMenuState
+    private let onDropRequest: (DockDropRequest) -> Bool
 
     private var panels: [DisplayIdentity: DockPanelController] = [:]
     private var observers: [NSObjectProtocol] = []
     private var snapshot: DockSnapshot = .empty
     private(set) var displays: [DisplayDescriptor] = []
     private var itemAnimationsEnabled = false
+    private var snapshotPreparationGeneration: UInt64 = 0
+    private var isPreparingSnapshot = false
+    private var pendingSnapshots: [PendingSnapshot] = []
+
+    private struct PendingSnapshot {
+        let snapshot: DockSnapshot
+        let itemAnimationsEnabled: Bool
+    }
 
     /// Called after the current display descriptors and panels are rebuilt.
     /// Consumers that derive policy from topology can therefore read a
@@ -24,16 +34,20 @@ final class DisplayCoordinator {
         topologyProvider: DisplayTopologyProvider = DisplayTopologyProvider(),
         preferences: PreferencesStore,
         mouseMonitor: MouseEdgeMonitor? = nil,
+        iconProvider: ApplicationIconProvider = .shared,
         onItemAction: @escaping (DockItem) -> Void,
         onItemContextAction: @escaping (DockItem, DockItemContextAction) -> Void = { _, _ in },
-        contextMenuStateProvider: @escaping (DockItem) -> DockItemContextMenuState = { _ in .unavailable }
+        contextMenuStateProvider: @escaping (DockItem) -> DockItemContextMenuState = { _ in .unavailable },
+        onDropRequest: @escaping (DockDropRequest) -> Bool = { _ in false }
     ) {
         self.topologyProvider = topologyProvider
         self.preferences = preferences
         self.mouseMonitor = mouseMonitor ?? MouseEdgeMonitor()
+        self.iconProvider = iconProvider
         self.onItemAction = onItemAction
         self.onItemContextAction = onItemContextAction
         self.contextMenuStateProvider = contextMenuStateProvider
+        self.onDropRequest = onDropRequest
     }
 
     func start() {
@@ -60,10 +74,15 @@ final class DisplayCoordinator {
             Task { @MainActor [weak self] in self?.rebuildPanels() }
         })
 
-        mouseMonitor.onSample = { [weak self] location, pressedButtons, now in
+        mouseMonitor.onSample = { [weak self] location, pressedButtons, now, isFileDrag in
             guard let self else { return }
             for panel in self.panels.values {
-                panel.processMouse(location: location, pressedButtons: pressedButtons, now: now)
+                panel.processMouse(
+                    location: location,
+                    pressedButtons: pressedButtons,
+                    now: now,
+                    isFileDrag: isFileDrag
+                )
             }
         }
         mouseMonitor.needsImmediateMovementSample = { [weak self] in
@@ -74,6 +93,9 @@ final class DisplayCoordinator {
     }
 
     func stop() {
+        snapshotPreparationGeneration &+= 1
+        pendingSnapshots.removeAll()
+        isPreparingSnapshot = false
         mouseMonitor.stop()
         mouseMonitor.needsImmediateMovementSample = nil
         observers.forEach(NotificationCenter.default.removeObserver)
@@ -83,12 +105,43 @@ final class DisplayCoordinator {
     }
 
     func apply(snapshot: DockSnapshot) {
-        self.snapshot = snapshot
-        panels.values.forEach {
-            $0.apply(
-                snapshot: snapshot,
-                itemAnimationsEnabled: itemAnimationsEnabled
-            )
+        pendingSnapshots.append(PendingSnapshot(
+            snapshot: snapshot,
+            itemAnimationsEnabled: itemAnimationsEnabled
+        ))
+        prepareNextSnapshotIfNeeded()
+    }
+
+    private func prepareNextSnapshotIfNeeded() {
+        guard !isPreparingSnapshot, let pending = pendingSnapshots.first else {
+            return
+        }
+        isPreparingSnapshot = true
+        snapshotPreparationGeneration &+= 1
+        let generation = snapshotPreparationGeneration
+        let applicationURLs = pending.snapshot.items.compactMap { item in
+            item.kind.isApplication ? item.applicationURL : nil
+        }
+        iconProvider.prepareIcons(for: applicationURLs) { [weak self] preparedIcons in
+            guard let self,
+                  self.snapshotPreparationGeneration == generation else {
+                return
+            }
+            guard !self.pendingSnapshots.isEmpty else {
+                self.isPreparingSnapshot = false
+                return
+            }
+            let prepared = self.pendingSnapshots.removeFirst()
+            self.iconProvider.retainForDisplay(preparedIcons)
+            self.snapshot = prepared.snapshot
+            self.panels.values.forEach {
+                $0.apply(
+                    snapshot: prepared.snapshot,
+                    itemAnimationsEnabled: prepared.itemAnimationsEnabled
+                )
+            }
+            self.isPreparingSnapshot = false
+            self.prepareNextSnapshotIfNeeded()
         }
     }
 
@@ -120,9 +173,11 @@ final class DisplayCoordinator {
                 panel = DockPanelController(
                     descriptor: display,
                     preferences: preferences,
+                    iconProvider: iconProvider,
                     onItemAction: onItemAction,
                     onItemContextAction: onItemContextAction,
-                    contextMenuStateProvider: contextMenuStateProvider
+                    contextMenuStateProvider: contextMenuStateProvider,
+                    onDropRequest: onDropRequest
                 )
                 panels[display.identity] = panel
             }
