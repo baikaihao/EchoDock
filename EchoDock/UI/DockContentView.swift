@@ -1537,7 +1537,7 @@ private final class DockStripView: NSView {
             at: now
         )
 
-        let launchingIdentities: Set<ApplicationIdentity> = {
+        let launchBounceStartIdentities: Set<ApplicationIdentity> = {
             guard launchBounceAnimationsEnabled,
                   !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
                 return []
@@ -1548,7 +1548,7 @@ private final class DockStripView: NSView {
                     .map(\.identity)
             )
         }()
-        for item in items where launchingIdentities.contains(item.identity) {
+        for item in items where launchBounceStartIdentities.contains(item.identity) {
             guard let previousState = previousStateByIdentity[item.identity],
                   previousState != .launching,
                   launchBounceTransitions[item.identity] == nil else { continue }
@@ -1568,13 +1568,21 @@ private final class DockStripView: NSView {
             presentedIdentities.contains($0.key)
         }
         removingIdentities.formIntersection(presentedIdentities)
+        // NSWorkspace reports an app as running shortly after launch begins.
+        // That blocks a new bounce, but an already-started fixed sequence must
+        // finish instead of being truncated by the next snapshot.
+        let failedLaunchIdentities = Set(items.compactMap { item -> ApplicationIdentity? in
+            guard case .failed = item.transientState else { return nil }
+            return item.identity
+        })
         launchBounceTransitions = launchBounceTransitions.filter {
-            presentedIdentities.contains($0.key)
-                && launchingIdentities.contains($0.key)
+            launchBounceAnimationsEnabled
+                && presentedIdentities.contains($0.key)
+                && !failedLaunchIdentities.contains($0.key)
         }
+        let activeLaunchBounceIdentities = Set(launchBounceTransitions.keys)
         launchBounceOffsets = launchBounceOffsets.filter {
-            presentedIdentities.contains($0.key)
-                && launchingIdentities.contains($0.key)
+            activeLaunchBounceIdentities.contains($0.key)
         }
 
         recalculateRequiredWidth()

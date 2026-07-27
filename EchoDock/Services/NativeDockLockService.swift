@@ -733,6 +733,9 @@ final class NativeDockLockService {
         guard isEnabled, eventTap == nil, AXIsProcessTrusted() else { return }
 
         let eventMask = (CGEventMask(1) << CGEventType.mouseMoved.rawValue)
+            | (CGEventMask(1) << CGEventType.leftMouseDragged.rawValue)
+            | (CGEventMask(1) << CGEventType.rightMouseDragged.rawValue)
+            | (CGEventMask(1) << CGEventType.otherMouseDragged.rawValue)
             | (CGEventMask(1) << CGEventType.tapDisabledByTimeout.rawValue)
             | (CGEventMask(1) << CGEventType.tapDisabledByUserInput.rawValue)
 
