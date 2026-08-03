@@ -201,8 +201,22 @@ final class WindowReservationService {
              kAXFocusedWindowChangedNotification:
             refreshWindows(processIdentifier: processIdentifier)
         case kAXMovedNotification,
-             kAXResizedNotification,
-             kAXWindowMiniaturizedNotification,
+             kAXResizedNotification:
+            guard let frame = accessibilityFrame(of: element),
+                  !consumeSuppressedMutation(for: element, currentFrame: frame) else {
+                return
+            }
+            // AX reports the system-assigned frame after a move or resize. Apply
+            // the reservation in the same callback so the full-height frame is
+            // not left on screen for the normal coalescing delay. The delayed
+            // evaluation remains as a fallback for animated or constrained apps.
+            evaluate(
+                window: element,
+                processIdentifier: processIdentifier,
+                knownFrame: frame
+            )
+            scheduleEvaluation(of: element, processIdentifier: processIdentifier)
+        case kAXWindowMiniaturizedNotification,
              kAXWindowDeminiaturizedNotification:
             guard let frame = accessibilityFrame(of: element),
                   !consumeSuppressedMutation(for: element, currentFrame: frame) else {
@@ -521,9 +535,13 @@ final class WindowReservationService {
         }
     }
 
-    private func evaluate(window: AXUIElement, processIdentifier: pid_t) {
+    private func evaluate(
+        window: AXUIElement,
+        processIdentifier: pid_t,
+        knownFrame: CGRect? = nil
+    ) {
         guard observedApplications[processIdentifier] != nil,
-              let currentFrame = accessibilityFrame(of: window) else {
+              let currentFrame = knownFrame ?? accessibilityFrame(of: window) else {
             return
         }
 
