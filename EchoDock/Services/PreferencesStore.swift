@@ -7,6 +7,7 @@ final class PreferencesStore {
     private enum Key {
         static let isEnabled = "isEnabled"
         static let autoHide = "autoHide"
+        static let reserveSpaceForWindows = "reserveSpaceForWindows"
         static let iconSize = "iconSize"
         static let iconSpacing = "iconSpacing"
         static let dockTransparency = "dockTransparency"
@@ -35,6 +36,7 @@ final class PreferencesStore {
         defaults.register(defaults: [
             Key.isEnabled: true,
             Key.autoHide: false,
+            Key.reserveSpaceForWindows: false,
             Key.iconSize: 48.0,
             Key.iconSpacing: 5.2,
             Key.dockTransparency: 0.17,
@@ -62,6 +64,11 @@ final class PreferencesStore {
     var autoHide: Bool {
         get { defaults.bool(forKey: Key.autoHide) }
         set { set(newValue, forKey: Key.autoHide) }
+    }
+
+    var reserveSpaceForWindows: Bool {
+        get { defaults.bool(forKey: Key.reserveSpaceForWindows) }
+        set { set(newValue, forKey: Key.reserveSpaceForWindows) }
     }
 
     var iconSize: CGFloat {

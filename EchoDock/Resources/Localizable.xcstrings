@@ -1616,6 +1616,57 @@
         }
       }
     },
+    "settings.general.reserveSpaceForWindows" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reserve Space for Windows"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "为窗口预留空间"
+          }
+        }
+      }
+    },
+    "settings.general.reserveSpaceForWindows.autoHideHint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Turn off Automatically Hide to reserve screen space."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭“自动隐藏”后才能预留屏幕空间。"
+          }
+        }
+      }
+    },
+    "settings.general.reserveSpaceForWindows.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep maximized and tiled windows above EchoDock."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让最大化和分屏窗口保持在 EchoDock 上方。"
+          }
+        }
+      }
+    },
     "settings.general.enabled" : {
       "extractionState" : "stale",
       "localizations" : {

@@ -58,6 +58,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 | 运行中的应用 | 可在分隔线后显示“正在运行但未固定”的普通应用；所有已启用屏幕共享同一应用列表。 |
 | 第三栏与废纸篓 | 将文件或文件夹拖入 EchoDock，保存为可排序的本地快捷方式；内置废纸篓支持系统级移入废纸篓、仅移除快捷方式以及 `⌘Z` 撤销。 |
 | 原生感交互 | 支持可选的底部热区与自动隐藏、完整名称提示、鼠标与文件拖拽下的连续范围放大、相邻图标位移、Dock 宽度伸缩和横向滚动。 |
+| 窗口避让 | 可选地让普通最大化、左右分屏及接触屏幕底边的标准分屏窗口停在 EchoDock 上方；按显示器独立计算，仅在 EchoDock 常驻显示时生效。 |
 | 动画反馈 | 可选的应用启动弹跳与运行指示灯；未固定的运行中应用进入或退出时平滑缩放和渐显、渐隐。 |
 | 应用操作 | 左键启动或切换应用；右键可打开应用、显示窗口、关闭窗口、隐藏/显示、退出，以及在 Finder 中定位。 |
 | 外观调整 | 调整图标大小、图标间距、背景透明度、放大倍率、影响范围和名称框距离，并独立开关启动弹跳与运行指示灯；macOS 26 及以上可切换经典与液态玻璃风格。 |
@@ -122,6 +123,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 | --- | --- | --- |
 | 启用 EchoDock | 显示或隐藏所有 EchoDock 面板，菜单栏工具仍会继续运行。 | 默认开启 |
 | 自动隐藏 | 鼠标离开后自动收起；关闭后保持显示。 | 默认关闭 |
+| 为窗口预留空间 | 让普通最大化和贴边分屏窗口停在 EchoDock 上方；需要辅助功能权限，自动隐藏开启时暂停生效。 | 默认关闭 |
 | 显示运行中未固定应用 | 将未固定但正在运行的普通应用放在分隔线后。 | 默认开启 |
 | 自动启用新连接显示器 | 新显示器首次连接时自动为其创建 EchoDock。 | 默认开启 |
 | 自动收起延迟 | 鼠标离开后等待多久再隐藏。 | `0.2–2.0 秒`，默认 `0.6 秒` |
@@ -163,6 +165,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 
 - 检测原生 Dock 当前实际位于哪块显示器；
 - 尝试迁移并固定原生 Dock；
+- 调整普通最大化和贴边分屏窗口，使其为常驻显示的 EchoDock 留出空间；
 - 通过右键菜单关闭其他应用的窗口；
 - 全局捕获 `⌘Z`，撤销最近一次由 EchoDock 完成的废纸篓操作或快捷方式移除。
 
@@ -194,7 +197,7 @@ EchoDock 会尝试把原生 Dock 引导到目标显示器，并阻止其他屏�
 - 不需要账号，不包含遥测，也不主动联网。
 - 不采集用户内容、操作记录或屏幕图像。
 - 系统 Dock 列表、应用运行状态、显示器信息、第三栏快捷方式、偏好设置和最后一次有效缓存均只在本机读取或保存。
-- 获得辅助功能权限后，只读取实现上述功能所需的 Dock 几何信息和窗口状态，不读取文稿内容。
+- 获得辅助功能权限后，只读取实现上述功能所需的 Dock 与窗口几何信息；启用“为窗口预留空间”时会调整符合条件的普通最大化与贴边分屏窗口，但不会读取文稿内容。
 
 ### 当前边界
 
@@ -250,7 +253,7 @@ EchoDock 当前专注于“在多个屏幕快速启动和切换应用”，并�
 <details>
 <summary><strong>EchoDock 会覆盖其他应用的窗口吗？</strong></summary>
 
-EchoDock 是浮层，不会为其他窗口预留桌面工作区。关闭自动隐藏后，它会持续显示在屏幕底部；如有遮挡，请重新开启自动隐藏或关闭该屏幕的 EchoDock。
+默认情况下 EchoDock 是浮层，可能覆盖普通窗口底部。关闭自动隐藏后，可在“设置 → 通用”开启“为窗口预留空间”并授予辅助功能权限；之后普通最大化、左右半屏以及接触屏幕底边的标准分屏窗口会停在 EchoDock 上方。原生全屏窗口、弹窗、不可调整尺寸的窗口以及拒绝辅助功能调整的应用不会被修改。
 
 </details>
 
@@ -275,6 +278,7 @@ EchoDock adds an independent, interactive app dock to the bottom of each display
 | Running apps | Optionally shows regular apps that are running but not pinned, separated from pinned apps by a divider. Every enabled display shares the same list. |
 | File shortcuts and Trash | Drag files or folders into EchoDock to keep sortable local shortcuts. The built-in Trash supports system recycling, shortcut-only removal, and `⌘Z` undo. |
 | Native-feeling interaction | Includes optional bottom-edge reveal and auto-hide, full item-name labels, continuous neighborhood magnification for both pointer and file drags, icon displacement, Dock width expansion, and horizontal scrolling. |
+| Maximized and tiled-window clearance | Optionally keeps ordinary maximized and bottom-edge tiled windows above EchoDock, calculated independently per display and active only while EchoDock remains visible. |
 | Motion feedback | Offers optional launch bounces and running indicators, and smoothly scales/fades unpinned running apps in and out. |
 | App controls | Left-click to launch or switch. Right-click to open, reveal windows, close a window, hide/show, quit, or locate the app in Finder. |
 | Appearance controls | Adjust icon size, spacing, background transparency, magnification scale and range, and label distance, with separate launch-bounce and running-indicator switches. macOS 26 and later can switch between Classic and Liquid Glass. |
@@ -339,6 +343,7 @@ Right-click empty space in EchoDock to open Settings or About, or to quit EchoDo
 | --- | --- | --- |
 | Enable EchoDock | Shows or hides all EchoDock panels while the menu bar utility keeps running. | On by default |
 | Auto Hide | Hides the Dock after the pointer leaves; turn it off to keep the Dock visible. | Off by default |
+| Reserve Space for Windows | Keeps ordinary maximized and tiled windows above EchoDock. Requires Accessibility permission and pauses while Auto Hide is enabled. | Off by default |
 | Show unpinned running apps | Places regular running apps that are not pinned after the divider. | On by default |
 | Enable newly connected displays | Creates an EchoDock on a display the first time it is connected. | On by default |
 | Hide delay | Controls how long EchoDock waits after the pointer leaves. | `0.2–2.0 s`, default `0.6 s` |
@@ -380,6 +385,7 @@ Accessibility permission is required to:
 
 - detect which display actually contains the system Dock;
 - relocate and protect the system Dock in fixed mode;
+- adjust ordinary maximized and bottom-edge tiled windows so they leave room for a persistently visible EchoDock;
 - close another app's window from the context menu;
 - capture `⌘Z` globally to undo the latest Trash or shortcut-removal operation performed by EchoDock.
 
@@ -411,7 +417,7 @@ Before using this mode, note that:
 - No account is required. EchoDock contains no telemetry and does not initiate network connections.
 - It does not collect user content, interaction history, or screen images.
 - The system Dock list, app state, display information, third-section shortcuts, preferences, and last valid cache are read or stored locally only.
-- With Accessibility permission, EchoDock reads only the Dock geometry and window state needed for the features above, not document contents.
+- With Accessibility permission, EchoDock reads only the Dock and window geometry needed for the features above. When Reserve Space for Windows is enabled, it adjusts eligible ordinary maximized and tiled windows but never reads document contents.
 
 ### Current limitations
 
@@ -467,7 +473,7 @@ Confirm that Accessibility permission is granted and “Displays have separate S
 <details>
 <summary><strong>Can EchoDock cover other app windows?</strong></summary>
 
-EchoDock is an overlay and does not reserve desktop work area for other windows. With Auto Hide turned off, it remains visible at the bottom. Turn Auto Hide back on or disable EchoDock on that display if it gets in the way.
+By default EchoDock is an overlay and may cover the bottom of ordinary windows. With Auto Hide off, enable Reserve Space for Windows under Settings → General and grant Accessibility permission. Ordinary maximized windows, left/right halves, and standard tiles that touch the display bottom will then stop above EchoDock. Native full-screen windows, dialogs, non-resizable windows, and apps that reject Accessibility resizing are left unchanged.
 
 </details>
 

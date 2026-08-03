@@ -8,6 +8,8 @@ final class GeneralSettingsViewController: NSViewController {
 
     private let enabledSwitch = NSSwitch()
     private let autoHideSwitch = NSSwitch()
+    private let reserveSpaceForWindowsSwitch = NSSwitch()
+    private let reserveSpaceForWindowsDescription = NSTextField(labelWithString: "")
     private let runningApplicationsSwitch = NSSwitch()
     private let newDisplaysSwitch = NSSwitch()
     private let hideDelaySlider = NSSlider()
@@ -72,6 +74,13 @@ final class GeneralSettingsViewController: NSViewController {
         guard isViewLoaded else { return }
         enabledSwitch.state = preferences.isEnabled ? .on : .off
         autoHideSwitch.state = preferences.autoHide ? .on : .off
+        reserveSpaceForWindowsSwitch.state = preferences.reserveSpaceForWindows ? .on : .off
+        reserveSpaceForWindowsSwitch.isEnabled = !preferences.autoHide
+        reserveSpaceForWindowsDescription.stringValue = L10n.text(
+            preferences.autoHide
+                ? "settings.general.reserveSpaceForWindows.autoHideHint"
+                : "settings.general.reserveSpaceForWindows.description"
+        )
         runningApplicationsSwitch.state = preferences.showRunningApplications ? .on : .off
         newDisplaysSwitch.state = preferences.newDisplaysEnabled ? .on : .off
         hideDelaySlider.doubleValue = preferences.hideDelay
@@ -100,6 +109,12 @@ final class GeneralSettingsViewController: NSViewController {
         enabledSwitch.action = #selector(enabledChanged)
         autoHideSwitch.target = self
         autoHideSwitch.action = #selector(autoHideChanged)
+        reserveSpaceForWindowsSwitch.target = self
+        reserveSpaceForWindowsSwitch.action = #selector(reserveSpaceForWindowsChanged)
+        reserveSpaceForWindowsDescription.font = .systemFont(ofSize: 11)
+        reserveSpaceForWindowsDescription.textColor = .secondaryLabelColor
+        reserveSpaceForWindowsDescription.maximumNumberOfLines = 2
+        reserveSpaceForWindowsDescription.lineBreakMode = .byWordWrapping
         runningApplicationsSwitch.target = self
         runningApplicationsSwitch.action = #selector(runningApplicationsChanged)
         newDisplaysSwitch.target = self
@@ -162,6 +177,11 @@ final class GeneralSettingsViewController: NSViewController {
         stack.addArrangedSubview(makeRow(
             title: L10n.text("settings.general.autoHide"),
             control: autoHideSwitch
+        ))
+        stack.addArrangedSubview(makeDescribedRow(
+            title: L10n.text("settings.general.reserveSpaceForWindows"),
+            description: reserveSpaceForWindowsDescription,
+            control: reserveSpaceForWindowsSwitch
         ))
         stack.addArrangedSubview(makeRow(
             title: L10n.text("settings.general.showRunningApplications"),
@@ -252,6 +272,30 @@ final class GeneralSettingsViewController: NSViewController {
         return row
     }
 
+    private func makeDescribedRow(
+        title: String,
+        description: NSTextField,
+        control: NSView
+    ) -> NSView {
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 13)
+        label.alignment = .left
+
+        let labels = NSStackView(views: [label, description])
+        labels.orientation = .vertical
+        labels.alignment = .leading
+        labels.spacing = 2
+
+        let spacer = NSView()
+        let row = NSStackView(views: [labels, spacer, control])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.heightAnchor.constraint(greaterThanOrEqualToConstant: 42).isActive = true
+        return row
+    }
+
     private func makeSliderRow(title: String, slider: NSSlider, valueLabel: NSTextField) -> NSView {
         slider.translatesAutoresizingMaskIntoConstraints = false
         slider.widthAnchor.constraint(equalToConstant: 220).isActive = true
@@ -285,6 +329,15 @@ final class GeneralSettingsViewController: NSViewController {
 
     @objc private func autoHideChanged(_ sender: NSSwitch) {
         preferences.autoHide = sender.state == .on
+    }
+
+    @objc private func reserveSpaceForWindowsChanged(_ sender: NSSwitch) {
+        let isEnabled = sender.state == .on
+        preferences.reserveSpaceForWindows = isEnabled
+        if isEnabled {
+            _ = accessibilityPermissionService.requestIfNeeded()
+        }
+        refresh()
     }
 
     @objc private func runningApplicationsChanged(_ sender: NSSwitch) {

@@ -8,6 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
     private var settingsWindowController: SettingsWindowController?
     private var nativeDockPolicyController: NativeDockPolicyController?
+    private var windowReservationService: WindowReservationService?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var appObservers: [NSObjectProtocol] = []
 
@@ -21,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         iconProvider.startObservingApplicationLaunches()
         let modelController = DockModelController(preferences: preferences)
         let nativeDockPolicyController = NativeDockPolicyController(preferences: preferences)
+        let windowReservationService = WindowReservationService(preferences: preferences)
         let displayCoordinator = DisplayCoordinator(
             preferences: preferences,
             iconProvider: iconProvider,
@@ -68,11 +70,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.statusItemController = statusItemController
         self.settingsWindowController = settingsWindowController
         self.nativeDockPolicyController = nativeDockPolicyController
+        self.windowReservationService = windowReservationService
 
         observeAppActions()
         observeWorkspaceLifecycle()
         nativeDockPolicyController.start()
         displayCoordinator.start()
+        windowReservationService.start()
         modelController.start()
         displayCoordinator.apply(snapshot: modelController.snapshot)
         statusItemController.update(snapshot: modelController.snapshot)
@@ -82,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         modelController?.stop()
+        windowReservationService?.stop()
         nativeDockPolicyController?.stop()
         displayCoordinator?.stop()
         ApplicationIconProvider.shared.stopObservingApplicationLaunches()
