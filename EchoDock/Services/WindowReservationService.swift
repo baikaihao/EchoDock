@@ -27,8 +27,9 @@ final class WindowReservationService {
     typealias ReservationHeightProvider = (DisplayDescriptor) -> CGFloat
 
     private static let messagingTimeout: Float = 0.2
-    private static let evaluationDelay: TimeInterval = 0.14
+    private static let evaluationDelay: TimeInterval = 0.05
     private static let mutationSuppressionDuration: TimeInterval = 0.8
+    private static let startupRefreshDelay: TimeInterval = 1.0
 
     private let topologyProvider: DisplayTopologyProvider
     private let workspace: NSWorkspace
@@ -49,6 +50,7 @@ final class WindowReservationService {
     private var displayGeometries: [WindowReservationDisplayGeometry] = []
     private var lifecycleGeneration: UInt64 = 0
     private var evaluationRevision: UInt64 = 0
+    private var startupRefreshWorkItem: DispatchWorkItem?
     private var isStarted = false
 
     convenience init(
@@ -100,11 +102,14 @@ final class WindowReservationService {
         observeWorkspace()
         observeApplicationState()
         reconcile(refreshAllWindows: true)
+        scheduleStartupRefresh()
     }
 
     func stop() {
         guard isStarted else { return }
         lifecycleGeneration &+= 1
+        startupRefreshWorkItem?.cancel()
+        startupRefreshWorkItem = nil
         pendingEvaluations.removeAll()
         restoreManagedWindows()
         removeAllAccessibilityObservers()
@@ -117,6 +122,21 @@ final class WindowReservationService {
         mutationSuppressions.removeAll()
         displayGeometries.removeAll()
         isStarted = false
+    }
+
+    private func scheduleStartupRefresh() {
+        startupRefreshWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.isStarted else { return }
+            // Retry once after login services and AX window lists have settled.
+            // Later applications and windows are covered by workspace/AX events.
+            self.reconcile(refreshAllWindows: true)
+        }
+        startupRefreshWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.startupRefreshDelay,
+            execute: workItem
+        )
     }
 
     /// Re-evaluates preference, display and running-application state. This is
@@ -206,15 +226,9 @@ final class WindowReservationService {
                   !consumeSuppressedMutation(for: element, currentFrame: frame) else {
                 return
             }
-            // AX reports the system-assigned frame after a move or resize. Apply
-            // the reservation in the same callback so the full-height frame is
-            // not left on screen for the normal coalescing delay. The delayed
-            // evaluation remains as a fallback for animated or constrained apps.
-            evaluate(
-                window: element,
-                processIdentifier: processIdentifier,
-                knownFrame: frame
-            )
+            // macOS can emit several AX events during one zoom or tile
+            // animation. Wait for a short quiet period so our size write does
+            // not fight WindowServer and make the bottom edge oscillate.
             scheduleEvaluation(of: element, processIdentifier: processIdentifier)
         case kAXWindowMiniaturizedNotification,
              kAXWindowDeminiaturizedNotification:
@@ -535,13 +549,9 @@ final class WindowReservationService {
         }
     }
 
-    private func evaluate(
-        window: AXUIElement,
-        processIdentifier: pid_t,
-        knownFrame: CGRect? = nil
-    ) {
+    private func evaluate(window: AXUIElement, processIdentifier: pid_t) {
         guard observedApplications[processIdentifier] != nil,
-              let currentFrame = knownFrame ?? accessibilityFrame(of: window) else {
+              let currentFrame = accessibilityFrame(of: window) else {
             return
         }
 

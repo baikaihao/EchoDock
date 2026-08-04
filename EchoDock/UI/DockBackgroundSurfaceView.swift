@@ -58,6 +58,33 @@ enum DockLiquidGlassTransparency {
     }
 }
 
+enum DockLiquidGlassSupplementalBlur {
+    static func opacity(
+        materialOpacity: CGFloat,
+        opaqueBackingAlpha: CGFloat
+    ) -> CGFloat {
+        min(1, max(0, materialOpacity))
+            * (1 - min(1, max(0, opaqueBackingAlpha)))
+    }
+}
+
+enum DockBackgroundGaussianBlur {
+    static let maximumRadius: CGFloat = 40
+    static let bodyHeightRadiusScale: CGFloat = 0.6
+
+    static func radius(
+        strength: CGFloat,
+        bodyHeight: CGFloat
+    ) -> CGFloat {
+        let effectiveMaximum = min(
+            maximumRadius,
+            max(0, bodyHeight) * bodyHeightRadiusScale
+        )
+        let normalizedStrength = DockBackgroundBlur.clamped(strength)
+        return effectiveMaximum * normalizedStrength * normalizedStrength
+    }
+}
+
 enum DockBackgroundRim {
     static let fullVisibilityMaterialOpacity: CGFloat = 0.15
 
@@ -76,12 +103,20 @@ struct DockBackgroundInteractionState: Equatable {
 }
 
 final class DockBackgroundSurfaceView: NSView {
+    private static let gaussianBlurFilterName = "echoDockGaussianBlur"
+    private static let gaussianBlurRadiusKeyPath =
+        "filters.\(gaussianBlurFilterName).inputRadius"
+
     private let rimLayer = CAShapeLayer()
     private var surfaceRoot: NSView?
     private var baseSurface: NSView?
+    private var gaussianBackdropSurface: DockGaussianBackdropView?
     private var opaqueBackingSurface: NSView?
+    private var gaussianBackdropFilter: NSObject?
+    private var appliedGaussianRadius: CGFloat?
     private var configuration: DockBackgroundSurfaceConfiguration?
     private var transparency: CGFloat = 0.17
+    private var blurStrength: CGFloat = DockBackgroundBlur.defaultValue
     private var bodyHeight: CGFloat = 72
     private var selectedStyle: DockBackgroundStyle = .liquidGlass
     private var previousBounds: NSRect = .null
@@ -126,10 +161,12 @@ final class DockBackgroundSurfaceView: NSView {
 
     func configure(
         transparency: CGFloat,
+        blurStrength: CGFloat,
         bodyHeight: CGFloat,
         style: DockBackgroundStyle
     ) {
         self.transparency = DockBackgroundTransparency.clamped(transparency)
+        self.blurStrength = DockBackgroundBlur.clamped(blurStrength)
         self.bodyHeight = max(0, bodyHeight)
         selectedStyle = style
         rebuildSurfaceIfNeeded()
@@ -159,6 +196,9 @@ final class DockBackgroundSurfaceView: NSView {
                 surfaceRoot?.frame = bounds
             }
             if bodyChanged {
+                gaussianBackdropSurface?.frame = bodyRect
+                gaussianBackdropSurface?.layer?.cornerRadius = cornerRadius
+                gaussianBackdropSurface?.layer?.cornerCurve = .continuous
                 baseSurface?.frame = bodyRect
                 opaqueBackingSurface?.frame = bodyRect
                 opaqueBackingSurface?.layer?.cornerRadius = cornerRadius
@@ -169,7 +209,21 @@ final class DockBackgroundSurfaceView: NSView {
                 }
             }
 
-        case .solid, .visualEffect:
+        case .visualEffect:
+            if bodyChanged {
+                surfaceRoot?.frame = bodyRect
+                surfaceRoot?.layer?.cornerRadius = cornerRadius
+                surfaceRoot?.layer?.cornerCurve = .continuous
+                let localBodyRect = NSRect(origin: .zero, size: bodyRect.size)
+                gaussianBackdropSurface?.frame = localBodyRect
+                gaussianBackdropSurface?.layer?.cornerRadius = cornerRadius
+                gaussianBackdropSurface?.layer?.cornerCurve = .continuous
+                baseSurface?.frame = localBodyRect
+                baseSurface?.layer?.cornerRadius = cornerRadius
+                baseSurface?.layer?.cornerCurve = .continuous
+            }
+
+        case .solid:
             if bodyChanged {
                 surfaceRoot?.frame = bodyRect
                 surfaceRoot?.layer?.cornerRadius = cornerRadius
@@ -207,6 +261,7 @@ final class DockBackgroundSurfaceView: NSView {
         super.viewDidChangeBackingProperties()
         previousBounds = .null
         previousBodyRect = .null
+        applyVisualProperties()
         needsLayout = true
     }
 
@@ -244,7 +299,10 @@ final class DockBackgroundSurfaceView: NSView {
         surfaceRoot?.removeFromSuperview()
         surfaceRoot = nil
         baseSurface = nil
+        gaussianBackdropSurface = nil
         opaqueBackingSurface = nil
+        gaussianBackdropFilter = nil
+        appliedGaussianRadius = nil
         previousBounds = .null
         previousBodyRect = .null
 
@@ -258,15 +316,14 @@ final class DockBackgroundSurfaceView: NSView {
             addSubview(solidView)
 
         case .visualEffect:
-            let effectView = NSVisualEffectView()
-            effectView.material = .menu
-            effectView.blendingMode = .behindWindow
-            effectView.state = .active
-            effectView.wantsLayer = true
-            effectView.layer?.masksToBounds = true
-            surfaceRoot = effectView
-            baseSurface = effectView
-            addSubview(effectView)
+            if supportsLiquidGlass {
+                installClassicSurface()
+            } else {
+                let effectView = makeClassicEffectView()
+                surfaceRoot = effectView
+                baseSurface = effectView
+                addSubview(effectView)
+            }
 
         case .liquidGlass:
             if #available(macOS 26.0, *) {
@@ -278,6 +335,46 @@ final class DockBackgroundSurfaceView: NSView {
         needsLayout = true
     }
 
+    private func installClassicSurface() {
+        let host = NSView()
+        host.wantsLayer = true
+        host.clipsToBounds = true
+        host.layer?.masksToBounds = true
+
+        let gaussianBackdrop = makeGaussianBackdropSurface()
+        let effectView = makeClassicEffectView()
+        host.addSubview(gaussianBackdrop.view)
+        host.addSubview(effectView, positioned: .above, relativeTo: gaussianBackdrop.view)
+
+        surfaceRoot = host
+        baseSurface = effectView
+        gaussianBackdropSurface = gaussianBackdrop.view
+        gaussianBackdropFilter = gaussianBackdrop.filter
+        addSubview(host)
+    }
+
+    private func makeClassicEffectView() -> NSVisualEffectView {
+        let effectView = NSVisualEffectView()
+        effectView.material = .menu
+        effectView.blendingMode = .behindWindow
+        effectView.state = .active
+        effectView.wantsLayer = true
+        effectView.layer?.masksToBounds = true
+        return effectView
+    }
+
+    private func makeGaussianBackdropSurface() -> (
+        view: DockGaussianBackdropView,
+        filter: NSObject?
+    ) {
+        let view = DockGaussianBackdropView()
+        view.wantsLayer = true
+        view.clipsToBounds = true
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+        view.layer?.masksToBounds = true
+        return (view, DockGaussianBackdropRuntime.makeGaussianBlurFilter())
+    }
+
     @available(macOS 26.0, *)
     private func installLiquidGlassSurface() {
         let host = NSView()
@@ -285,17 +382,64 @@ final class DockBackgroundSurfaceView: NSView {
         host.clipsToBounds = false
         host.layer?.masksToBounds = false
 
+        let gaussianBackdrop = makeGaussianBackdropSurface()
+
         let baseGlass = NSGlassEffectView()
         let opaqueBacking = NSView()
         opaqueBacking.wantsLayer = true
         opaqueBacking.layer?.masksToBounds = true
-        host.addSubview(baseGlass)
+        host.addSubview(gaussianBackdrop.view)
+        host.addSubview(baseGlass, positioned: .above, relativeTo: gaussianBackdrop.view)
         host.addSubview(opaqueBacking, positioned: .above, relativeTo: baseGlass)
 
         surfaceRoot = host
         baseSurface = baseGlass
+        gaussianBackdropSurface = gaussianBackdrop.view
         opaqueBackingSurface = opaqueBacking
+        gaussianBackdropFilter = gaussianBackdrop.filter
         addSubview(host)
+    }
+
+    private func applyGaussianBlur(radius: CGFloat, opacity: CGFloat) {
+        guard let surface = gaussianBackdropSurface,
+              let layer = surface.backdropLayer,
+              let gaussianFilter = gaussianBackdropFilter else {
+            gaussianBackdropSurface?.isHidden = true
+            return
+        }
+        let radius = max(0, radius)
+        let opacity = min(1, max(0, opacity))
+        let isVisible = radius > 0.000_1 && opacity > 0.000_1
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if !isVisible {
+            if layer.filters != nil {
+                layer.filters = nil
+            }
+            layer.opacity = 0
+            CATransaction.commit()
+            appliedGaussianRadius = nil
+            surface.isHidden = true
+            return
+        }
+
+        if layer.filters == nil {
+            gaussianFilter.setValue(radius, forKey: "inputRadius")
+            layer.filters = [gaussianFilter]
+        } else if appliedGaussianRadius != radius {
+            layer.setValue(
+                radius,
+                forKeyPath: Self.gaussianBlurRadiusKeyPath
+            )
+        }
+        layer.contentsScale = window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+        layer.opacity = Float(opacity)
+        CATransaction.commit()
+        appliedGaussianRadius = radius
+        surface.isHidden = false
     }
 
     private func applyVisualProperties() {
@@ -313,7 +457,16 @@ final class DockBackgroundSurfaceView: NSView {
             surfaceRoot?.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
 
         case .visualEffect:
-            surfaceRoot?.alphaValue = materialOpacity
+            surfaceRoot?.alphaValue = 1
+            baseSurface?.alphaValue = materialOpacity
+            let radius = DockBackgroundGaussianBlur.radius(
+                strength: blurStrength,
+                bodyHeight: bodyHeight
+            )
+            applyGaussianBlur(
+                radius: radius,
+                opacity: materialOpacity
+            )
 
         case .liquidGlass:
             if #available(macOS 26.0, *) {
@@ -332,8 +485,21 @@ final class DockBackgroundSurfaceView: NSView {
                         for: transparency
                     )
                 }
-                opaqueBackingSurface?.alphaValue = DockLiquidGlassTransparency
+                let opaqueBackingAlpha = DockLiquidGlassTransparency
                     .opaqueBackingAlpha(for: transparency)
+                let supplementalBlurOpacity = DockLiquidGlassSupplementalBlur.opacity(
+                    materialOpacity: materialOpacity,
+                    opaqueBackingAlpha: opaqueBackingAlpha
+                )
+                let radius = DockBackgroundGaussianBlur.radius(
+                    strength: blurStrength,
+                    bodyHeight: bodyHeight
+                )
+                applyGaussianBlur(
+                    radius: radius,
+                    opacity: supplementalBlurOpacity
+                )
+                opaqueBackingSurface?.alphaValue = opaqueBackingAlpha
                 opaqueBackingSurface?.layer?.backgroundColor = NSColor
                     .controlBackgroundColor.cgColor
             }
@@ -350,5 +516,64 @@ final class DockBackgroundSurfaceView: NSView {
         rimLayer.strokeColor = NSColor.white.withAlphaComponent(
             baseRimAlpha * rimVisibility
         ).cgColor
+    }
+}
+
+private enum DockGaussianBackdropRuntime {
+    private static let backdropLayerClassName = "CABackdropLayer"
+    private static let filterClassName = "CAFilter"
+
+    static func makeBehindWindowLayer() -> CALayer? {
+        guard let layerClass = NSClassFromString(backdropLayerClassName)
+            as? NSObject.Type,
+              let unmanagedLayer = layerClass.perform(
+                NSSelectorFromString("behindWindowLayer")
+              ),
+              let layer = unmanagedLayer.takeUnretainedValue() as? CALayer else {
+            return nil
+        }
+
+        let scaleSetter = NSSelectorFromString("setScale:")
+        if layer.responds(to: scaleSetter) {
+            layer.setValue(CGFloat(1), forKey: "scale")
+        }
+        return layer
+    }
+
+    static func isBackdropLayer(_ layer: CALayer) -> Bool {
+        guard let layerClass = NSClassFromString(backdropLayerClassName) else {
+            return false
+        }
+        return layer.isKind(of: layerClass)
+    }
+
+    static func makeGaussianBlurFilter() -> NSObject? {
+        guard let filterClass = NSClassFromString(filterClassName) as? NSObject.Type,
+              let unmanagedFilter = filterClass.perform(
+                NSSelectorFromString("filterWithType:"),
+                with: "gaussianBlur"
+              ),
+              let filter = unmanagedFilter.takeUnretainedValue() as? NSObject else {
+            return nil
+        }
+        filter.setValue("echoDockGaussianBlur", forKey: "name")
+        filter.setValue(0, forKey: "inputRadius")
+        filter.setValue(true, forKey: "inputNormalizeEdges")
+        filter.setValue(true, forKey: "inputDither")
+        return filter
+    }
+}
+
+private final class DockGaussianBackdropView: NSView {
+    override func makeBackingLayer() -> CALayer {
+        DockGaussianBackdropRuntime.makeBehindWindowLayer()
+            ?? super.makeBackingLayer()
+    }
+
+    var backdropLayer: CALayer? {
+        guard let layer, DockGaussianBackdropRuntime.isBackdropLayer(layer) else {
+            return nil
+        }
+        return layer
     }
 }

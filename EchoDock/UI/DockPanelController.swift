@@ -27,6 +27,25 @@ enum DockPanelVisibilityState {
     }
 }
 
+enum DockPanelPresentationMode: Equatable {
+    case suppressed
+    case autoHidden
+    case alwaysVisible
+}
+
+enum DockPanelPresentationPolicy {
+    static func mode(
+        autoHide: Bool,
+        autoHideInFullScreen: Bool,
+        isFullScreenActive: Bool
+    ) -> DockPanelPresentationMode {
+        if autoHideInFullScreen, isFullScreenActive {
+            return .suppressed
+        }
+        return autoHide ? .autoHidden : .alwaysVisible
+    }
+}
+
 enum DockRunningItemInsertionPolicy {
     static func insertedIdentities(
         previous: DockSnapshot,
@@ -137,7 +156,8 @@ final class DockPanelController {
     let displayIdentity: DisplayIdentity
 
     var needsImmediatePointerSample: Bool {
-        panel.isVisible
+        presentationMode != .suppressed
+            && panel.isVisible
             && panel.ignoresMouseEvents
             && state.allowsTooltipPresentation
             && !isContextMenuPresented
@@ -162,6 +182,15 @@ final class DockPanelController {
     private var allDisplays: [DisplayDescriptor] = []
     private var hasAppliedExternalSnapshot = false
     private var isLaunchBounceActive = false
+    private var isFullScreenActive = false
+
+    private var presentationMode: DockPanelPresentationMode {
+        DockPanelPresentationPolicy.mode(
+            autoHide: preferences.autoHide,
+            autoHideInFullScreen: preferences.autoHideInFullScreen,
+            isFullScreenActive: isFullScreenActive
+        )
+    }
 
     init(
         descriptor: DisplayDescriptor,
@@ -301,6 +330,12 @@ final class DockPanelController {
         applyLayout()
     }
 
+    func setFullScreenActive(_ isActive: Bool) {
+        guard isFullScreenActive != isActive else { return }
+        isFullScreenActive = isActive
+        reconcilePresentationMode(animated: false)
+    }
+
     func apply(snapshot: DockSnapshot, itemAnimationsEnabled: Bool = true) {
         guard self.snapshot != snapshot else { return }
         let animationPrerequisitesMet = itemAnimationsEnabled
@@ -310,7 +345,7 @@ final class DockPanelController {
             previous: self.snapshot,
             next: snapshot,
             state: state,
-            autoHide: preferences.autoHide,
+            autoHide: presentationMode == .autoHidden,
             animationsEnabled: animationPrerequisitesMet
                 && preferences.launchBounceEnabled
         ) {
@@ -353,13 +388,7 @@ final class DockPanelController {
 
     func applyPreferences() {
         applyLayout()
-        if preferences.autoHide {
-            if state == .alwaysVisible {
-                hide(animated: false)
-            }
-        } else {
-            show(always: true, animated: state != .alwaysVisible)
-        }
+        reconcilePresentationMode(animated: state != .alwaysVisible)
     }
 
     func processMouse(
@@ -368,6 +397,7 @@ final class DockPanelController {
         now: Date,
         isFileDrag: Bool = false
     ) {
+        guard presentationMode != .suppressed else { return }
         updateFileDragCaptureRequest(
             preferences.isEnabled && pressedButtons != 0
         )
@@ -425,7 +455,7 @@ final class DockPanelController {
                 hide(animated: false)
             }
         }
-        guard preferences.autoHide else {
+        guard presentationMode == .autoHidden else {
             if state != .alwaysVisible { show(always: true, animated: true) }
             return
         }
@@ -516,6 +546,7 @@ final class DockPanelController {
             iconSize: preferences.iconSize,
             maxWidth: maximumWidth,
             backgroundTransparency: preferences.dockTransparency,
+            backgroundBlur: preferences.dockBackgroundBlur,
             backgroundStyle: preferences.dockBackgroundStyle,
             magnificationEnabled: preferences.magnificationEnabled,
             magnificationScale: preferences.magnificationScale,
@@ -549,6 +580,7 @@ final class DockPanelController {
     }
 
     private func show(always: Bool, animated: Bool) {
+        guard presentationMode != .suppressed else { return }
         animationGeneration &+= 1
         let generation = animationGeneration
         state = always ? .alwaysVisible : .showing
@@ -617,6 +649,40 @@ final class DockPanelController {
         })
     }
 
+    private func reconcilePresentationMode(animated: Bool) {
+        hotZoneEnteredAt = nil
+        mouseLeftAt = nil
+
+        switch presentationMode {
+        case .suppressed:
+            forceHideForFullScreen()
+        case .autoHidden:
+            if state == .alwaysVisible {
+                hide(animated: false)
+            }
+        case .alwaysVisible:
+            show(always: true, animated: animated)
+        }
+    }
+
+    private func forceHideForFullScreen() {
+        animationGeneration &+= 1
+        state = .hidden
+        contentView.cancelFileDrag()
+        fileDragCaptureRevision &+= 1
+        isFileDragDestinationActive = false
+        isFileDragCaptureActive = false
+        isFileDragCaptureRequested = false
+        panel.ignoresMouseEvents = false
+        contentView.resetInteraction()
+        isContextMenuPresented = false
+        tooltipPanelController.hide()
+        dragReceiverPanel.orderOut(nil)
+        panel.orderOut(nil)
+        contentView.alphaValue = 1
+        contentView.frame.origin = .zero
+    }
+
     private func isInHotZone(_ location: CGPoint) -> Bool {
         let width = min(descriptor.frame.width - 24, max(240, panel.frame.width))
         let minimumX = descriptor.frame.midX - width / 2
@@ -663,7 +729,8 @@ final class DockPanelController {
 
     private func activateFileDragCapture() {
         fileDragCaptureRevision &+= 1
-        guard !isFileDragCaptureActive else { return }
+        guard presentationMode != .suppressed,
+              !isFileDragCaptureActive else { return }
 
         isFileDragCaptureActive = true
         dragReceiverPanel.setFrame(fileDragReceiverFrame, display: false)

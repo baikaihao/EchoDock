@@ -57,7 +57,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 | 单向同步系统 Dock | 自动读取系统 Dock 的固定应用与顺序，并从本机应用包加载本地化名称和图标；系统 Dock 发生增删或排序后会自动刷新，读取失败时使用上一次有效列表。 |
 | 运行中的应用 | 可在分隔线后显示“正在运行但未固定”的普通应用；所有已启用屏幕共享同一应用列表。 |
 | 第三栏与废纸篓 | 将文件或文件夹拖入 EchoDock，保存为可排序的本地快捷方式；内置废纸篓支持系统级移入废纸篓、仅移除快捷方式以及 `⌘Z` 撤销。 |
-| 原生感交互 | 支持可选的底部热区与自动隐藏、完整名称提示、鼠标与文件拖拽下的连续范围放大、相邻图标位移、Dock 宽度伸缩和横向滚动。 |
+| 原生感交互 | 支持底部热区、普通自动隐藏与逐屏全屏自动隐藏、完整名称提示、鼠标与文件拖拽下的连续范围放大、相邻图标位移、Dock 宽度伸缩和横向滚动。 |
 | 窗口避让 | 可选地让普通最大化、左右分屏及接触屏幕底边的标准分屏窗口停在 EchoDock 上方；按显示器独立计算，仅在 EchoDock 常驻显示时生效。 |
 | 动画反馈 | 可选的应用启动弹跳与运行指示灯；未固定的运行中应用进入或退出时平滑缩放和渐显、渐隐。 |
 | 应用操作 | 左键启动或切换应用；右键可打开应用、显示窗口、关闭窗口、隐藏/显示、退出，以及在 Finder 中定位。 |
@@ -70,11 +70,11 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 1. 打开 `EchoDock.app`。EchoDock 会常驻菜单栏，不会占用系统 Dock 的位置。
 2. 点击菜单栏中的 EchoDock 图标，选择“设置…”。
 3. 打开“显示器”页面，为需要使用 EchoDock 的屏幕勾选 EchoDock。
-4. EchoDock 默认常驻在已启用屏幕的底部；如需鼠标触边时才显示，可在“通用”中开启“自动隐藏”。
+4. EchoDock 默认在普通桌面常驻于已启用屏幕的底部；如需鼠标触边时才显示，可在“通用”中开启“自动隐藏”。
 5. 左键点击图标启动或切换应用；右键点击图标使用更多操作。
 6. 将 Finder 中的文件或文件夹拖到废纸篓左侧，即可加入第三栏。
 
-默认情况下，EchoDock 会启用所有可用屏幕、保持显示，并显示运行中但未固定的应用；启动弹跳与运行指示灯也默认开启。你可以在“通用”中自行开启自动隐藏，或从菜单栏选择“隐藏 EchoDock”，临时隐藏所有面板而不退出后台同步。
+默认情况下，EchoDock 会启用所有可用屏幕、在普通桌面保持显示，并在原生全屏空间中自动隐藏；运行中未固定的应用、启动弹跳与运行指示灯也默认开启。你可以在“通用”中调整两种自动隐藏行为，或从菜单栏选择“隐藏 EchoDock”，临时隐藏所有面板而不退出后台同步。
 
 ### 使用方式
 
@@ -123,6 +123,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 | --- | --- | --- |
 | 启用 EchoDock | 显示或隐藏所有 EchoDock 面板，菜单栏工具仍会继续运行。 | 默认开启 |
 | 自动隐藏 | 鼠标离开后自动收起；关闭后保持显示。 | 默认关闭 |
+| 全屏时自动隐藏 | 当前屏幕被全屏内容覆盖时隐藏该屏幕上的 EchoDock，包括原生全屏、Split View 和无边框全屏；退出后恢复原有显示模式。 | 默认开启 |
 | 为窗口预留空间 | 让普通最大化和贴边分屏窗口停在 EchoDock 上方；需要辅助功能权限，自动隐藏开启时暂停生效。 | 默认关闭 |
 | 显示运行中未固定应用 | 将未固定但正在运行的普通应用放在分隔线后。 | 默认开启 |
 | 自动启用新连接显示器 | 新显示器首次连接时自动为其创建 EchoDock。 | 默认开启 |
@@ -277,7 +278,7 @@ EchoDock adds an independent, interactive app dock to the bottom of each display
 | One-way system Dock sync | Reads pinned apps and order from the system Dock, then loads localized names and icons from local app bundles. Changes are refreshed automatically, with the last valid list used as a fallback when the preferences are temporarily unavailable. |
 | Running apps | Optionally shows regular apps that are running but not pinned, separated from pinned apps by a divider. Every enabled display shares the same list. |
 | File shortcuts and Trash | Drag files or folders into EchoDock to keep sortable local shortcuts. The built-in Trash supports system recycling, shortcut-only removal, and `⌘Z` undo. |
-| Native-feeling interaction | Includes optional bottom-edge reveal and auto-hide, full item-name labels, continuous neighborhood magnification for both pointer and file drags, icon displacement, Dock width expansion, and horizontal scrolling. |
+| Native-feeling interaction | Includes bottom-edge reveal, regular auto-hide, per-display full-screen auto-hide, full item-name labels, continuous neighborhood magnification for both pointer and file drags, icon displacement, Dock width expansion, and horizontal scrolling. |
 | Maximized and tiled-window clearance | Optionally keeps ordinary maximized and bottom-edge tiled windows above EchoDock, calculated independently per display and active only while EchoDock remains visible. |
 | Motion feedback | Offers optional launch bounces and running indicators, and smoothly scales/fades unpinned running apps in and out. |
 | App controls | Left-click to launch or switch. Right-click to open, reveal windows, close a window, hide/show, quit, or locate the app in Finder. |
@@ -290,11 +291,11 @@ EchoDock adds an independent, interactive app dock to the bottom of each display
 1. Open `EchoDock.app`. EchoDock stays in the menu bar and does not add itself to the system Dock.
 2. Click the EchoDock menu bar icon and choose “Settings”.
 3. Open the “Displays” page and enable EchoDock for the displays where you want to use it.
-4. EchoDock stays visible at the bottom of enabled displays by default. To reveal it only at the screen edge, turn on “Auto Hide” under General.
+4. EchoDock stays visible at the bottom of enabled displays on regular desktops. To reveal it only at the screen edge, turn on “Auto Hide” under General.
 5. Left-click an icon to launch or switch apps. Right-click for additional actions.
 6. Drag files or folders from Finder to the area left of Trash to add them to the third section.
 
-By default, EchoDock is enabled on every available display, stays visible, and includes running apps that are not pinned. Launch bounces and running indicators are also enabled by default. You can turn on Auto Hide under General, or choose “Hide EchoDock” from the menu bar to hide all panels temporarily while keeping synchronization running.
+By default, EchoDock is enabled on every available display, stays visible on regular desktops, and hides automatically in native full-screen spaces. Unpinned running apps, launch bounces, and running indicators are also enabled by default. You can adjust both auto-hide behaviors under General, or choose “Hide EchoDock” from the menu bar to hide all panels temporarily while keeping synchronization running.
 
 ### How to use it
 
@@ -343,6 +344,7 @@ Right-click empty space in EchoDock to open Settings or About, or to quit EchoDo
 | --- | --- | --- |
 | Enable EchoDock | Shows or hides all EchoDock panels while the menu bar utility keeps running. | On by default |
 | Auto Hide | Hides the Dock after the pointer leaves; turn it off to keep the Dock visible. | Off by default |
+| Auto Hide in Full Screen | Hides EchoDock on a display covered by full-screen content, including native full screen, Split View, and borderless full screen, then restores its previous visibility mode on exit. | On by default |
 | Reserve Space for Windows | Keeps ordinary maximized and tiled windows above EchoDock. Requires Accessibility permission and pauses while Auto Hide is enabled. | Off by default |
 | Show unpinned running apps | Places regular running apps that are not pinned after the divider. | On by default |
 | Enable newly connected displays | Creates an EchoDock on a display the first time it is connected. | On by default |

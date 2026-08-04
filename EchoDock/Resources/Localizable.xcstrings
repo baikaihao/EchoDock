@@ -698,6 +698,23 @@
         }
       }
     },
+    "settings.appearance.backgroundBlur" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gaussian Blur"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "高斯模糊"
+          }
+        }
+      }
+    },
     "settings.appearance.backgroundStyle" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1612,6 +1629,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "自动隐藏"
+          }
+        }
+      }
+    },
+    "settings.general.autoHideInFullScreen" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatically Hide in Full Screen"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全屏时自动隐藏"
           }
         }
       }

@@ -43,6 +43,7 @@ final class DockContentView: NSView {
     private var iconSize: CGFloat = 48
     private var maxWidth: CGFloat = 800
     private var backgroundTransparency: CGFloat = 0.17
+    private var backgroundBlur: CGFloat = DockBackgroundBlur.defaultValue
     private var backgroundStyle: DockBackgroundStyle = .liquidGlass
     private var magnificationEnabled = true
     private var magnificationScale: CGFloat = 1.18
@@ -80,6 +81,7 @@ final class DockContentView: NSView {
 
         backgroundView.configure(
             transparency: backgroundTransparency,
+            blurStrength: backgroundBlur,
             bodyHeight: dockBodyHeight,
             style: backgroundStyle
         )
@@ -144,6 +146,7 @@ final class DockContentView: NSView {
         iconSize: CGFloat,
         maxWidth: CGFloat,
         backgroundTransparency: CGFloat,
+        backgroundBlur: CGFloat = DockBackgroundBlur.defaultValue,
         backgroundStyle: DockBackgroundStyle = .liquidGlass,
         magnificationEnabled: Bool = true,
         magnificationScale: CGFloat = 1.18,
@@ -160,6 +163,7 @@ final class DockContentView: NSView {
         self.iconSize = iconSize
         self.maxWidth = max(160, maxWidth)
         self.backgroundTransparency = DockBackgroundTransparency.clamped(backgroundTransparency)
+        self.backgroundBlur = DockBackgroundBlur.clamped(backgroundBlur)
         self.backgroundStyle = backgroundStyle
         self.magnificationEnabled = magnificationEnabled
         self.magnificationScale = magnificationEnabled
@@ -1023,6 +1027,7 @@ final class DockContentView: NSView {
         // opacity. Only the material is faded; icons remain fully opaque.
         backgroundView.configure(
             transparency: backgroundTransparency,
+            blurStrength: backgroundBlur,
             bodyHeight: dockBodyHeight,
             style: backgroundStyle
         )
@@ -1031,6 +1036,7 @@ final class DockContentView: NSView {
     private func updateBackgroundCornerRadius() {
         backgroundView.configure(
             transparency: backgroundTransparency,
+            blurStrength: backgroundBlur,
             bodyHeight: dockBodyHeight,
             style: backgroundStyle
         )

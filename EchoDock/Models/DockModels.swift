@@ -12,6 +12,15 @@ enum DockBackgroundTransparency {
     }
 }
 
+enum DockBackgroundBlur {
+    static let allowedRange: ClosedRange<CGFloat> = 0...1
+    static let defaultValue: CGFloat = 0.5
+
+    static func clamped(_ value: CGFloat) -> CGFloat {
+        min(allowedRange.upperBound, max(allowedRange.lowerBound, value))
+    }
+}
+
 enum DockBackgroundStyle: String, CaseIterable, Sendable {
     case classic
     case liquidGlass

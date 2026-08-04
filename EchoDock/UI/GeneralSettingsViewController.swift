@@ -8,6 +8,7 @@ final class GeneralSettingsViewController: NSViewController {
 
     private let enabledSwitch = NSSwitch()
     private let autoHideSwitch = NSSwitch()
+    private let autoHideInFullScreenSwitch = NSSwitch()
     private let reserveSpaceForWindowsSwitch = NSSwitch()
     private let reserveSpaceForWindowsDescription = NSTextField(labelWithString: "")
     private let runningApplicationsSwitch = NSSwitch()
@@ -74,6 +75,7 @@ final class GeneralSettingsViewController: NSViewController {
         guard isViewLoaded else { return }
         enabledSwitch.state = preferences.isEnabled ? .on : .off
         autoHideSwitch.state = preferences.autoHide ? .on : .off
+        autoHideInFullScreenSwitch.state = preferences.autoHideInFullScreen ? .on : .off
         reserveSpaceForWindowsSwitch.state = preferences.reserveSpaceForWindows ? .on : .off
         reserveSpaceForWindowsSwitch.isEnabled = !preferences.autoHide
         reserveSpaceForWindowsDescription.stringValue = L10n.text(
@@ -109,6 +111,8 @@ final class GeneralSettingsViewController: NSViewController {
         enabledSwitch.action = #selector(enabledChanged)
         autoHideSwitch.target = self
         autoHideSwitch.action = #selector(autoHideChanged)
+        autoHideInFullScreenSwitch.target = self
+        autoHideInFullScreenSwitch.action = #selector(autoHideInFullScreenChanged)
         reserveSpaceForWindowsSwitch.target = self
         reserveSpaceForWindowsSwitch.action = #selector(reserveSpaceForWindowsChanged)
         reserveSpaceForWindowsDescription.font = .systemFont(ofSize: 11)
@@ -177,6 +181,10 @@ final class GeneralSettingsViewController: NSViewController {
         stack.addArrangedSubview(makeRow(
             title: L10n.text("settings.general.autoHide"),
             control: autoHideSwitch
+        ))
+        stack.addArrangedSubview(makeRow(
+            title: L10n.text("settings.general.autoHideInFullScreen"),
+            control: autoHideInFullScreenSwitch
         ))
         stack.addArrangedSubview(makeDescribedRow(
             title: L10n.text("settings.general.reserveSpaceForWindows"),
@@ -329,6 +337,10 @@ final class GeneralSettingsViewController: NSViewController {
 
     @objc private func autoHideChanged(_ sender: NSSwitch) {
         preferences.autoHide = sender.state == .on
+    }
+
+    @objc private func autoHideInFullScreenChanged(_ sender: NSSwitch) {
+        preferences.autoHideInFullScreen = sender.state == .on
     }
 
     @objc private func reserveSpaceForWindowsChanged(_ sender: NSSwitch) {

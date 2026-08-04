@@ -11,6 +11,8 @@ final class AppearanceSettingsViewController: NSViewController {
     private let iconSpacingValue = NSTextField(labelWithString: "")
     private let transparencySlider = NSSlider()
     private let transparencyValue = NSTextField(labelWithString: "")
+    private let backgroundBlurSlider = NSSlider()
+    private let backgroundBlurValue = NSTextField(labelWithString: "")
     private let backgroundStyleControl = NSSegmentedControl()
     private let magnificationSwitch = NSSwitch()
     private let magnificationScaleSlider = NSSlider()
@@ -78,7 +80,13 @@ final class AppearanceSettingsViewController: NSViewController {
             "format.percent.zeroDecimals",
             preferences.dockTransparency * 100
         )
+        backgroundBlurSlider.doubleValue = Double(preferences.dockBackgroundBlur)
+        backgroundBlurValue.stringValue = L10n.format(
+            "format.percent.zeroDecimals",
+            preferences.dockBackgroundBlur * 100
+        )
         backgroundStyleControl.selectedSegment = preferences.dockBackgroundStyle == .classic ? 0 : 1
+        backgroundBlurSlider.isEnabled = supportsBackgroundStyleSelection
         magnificationSwitch.state = preferences.magnificationEnabled ? .on : .off
         magnificationScaleSlider.doubleValue = Double(preferences.magnificationScale)
         magnificationScaleValue.stringValue = L10n.format(
@@ -116,6 +124,12 @@ final class AppearanceSettingsViewController: NSViewController {
             minimum: Double(DockBackgroundTransparency.allowedRange.lowerBound),
             maximum: Double(DockBackgroundTransparency.allowedRange.upperBound),
             action: #selector(transparencyChanged)
+        )
+        configureContinuousSlider(
+            backgroundBlurSlider,
+            minimum: Double(DockBackgroundBlur.allowedRange.lowerBound),
+            maximum: Double(DockBackgroundBlur.allowedRange.upperBound),
+            action: #selector(backgroundBlurChanged)
         )
 
         backgroundStyleControl.segmentCount = 2
@@ -218,6 +232,13 @@ final class AppearanceSettingsViewController: NSViewController {
             slider: transparencySlider,
             valueLabel: transparencyValue
         ))
+        if supportsBackgroundStyleSelection {
+            stack.addArrangedSubview(makeSliderRow(
+                title: L10n.text("settings.appearance.backgroundBlur"),
+                slider: backgroundBlurSlider,
+                valueLabel: backgroundBlurValue
+            ))
+        }
 
         stack.addArrangedSubview(makeSeparator())
         stack.addArrangedSubview(makeSectionLabel(L10n.text("settings.appearance.section.interaction")))
@@ -344,6 +365,10 @@ final class AppearanceSettingsViewController: NSViewController {
 
     @objc private func transparencyChanged(_ sender: NSSlider) {
         preferences.dockTransparency = CGFloat(sender.doubleValue)
+    }
+
+    @objc private func backgroundBlurChanged(_ sender: NSSlider) {
+        preferences.dockBackgroundBlur = CGFloat(sender.doubleValue)
     }
 
     @objc private func backgroundStyleChanged(_ sender: NSSegmentedControl) {

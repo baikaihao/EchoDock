@@ -5,6 +5,7 @@ final class DisplayCoordinator {
     private let topologyProvider: DisplayTopologyProvider
     private let preferences: PreferencesStore
     private let mouseMonitor: MouseEdgeMonitor
+    private let fullScreenMonitor: FullScreenDisplayMonitor
     private let iconProvider: ApplicationIconProvider
     private let onItemAction: (DockItem) -> Void
     private let onItemContextAction: (DockItem, DockItemContextAction) -> Void
@@ -14,6 +15,7 @@ final class DisplayCoordinator {
     private var panels: [DisplayIdentity: DockPanelController] = [:]
     private var observers: [NSObjectProtocol] = []
     private var snapshot: DockSnapshot = .empty
+    private var fullScreenDisplayIDs: Set<CGDirectDisplayID> = []
     private(set) var displays: [DisplayDescriptor] = []
     private var itemAnimationsEnabled = false
     private var snapshotPreparationGeneration: UInt64 = 0
@@ -34,6 +36,7 @@ final class DisplayCoordinator {
         topologyProvider: DisplayTopologyProvider = DisplayTopologyProvider(),
         preferences: PreferencesStore,
         mouseMonitor: MouseEdgeMonitor? = nil,
+        fullScreenMonitor: FullScreenDisplayMonitor? = nil,
         iconProvider: ApplicationIconProvider = .shared,
         onItemAction: @escaping (DockItem) -> Void,
         onItemContextAction: @escaping (DockItem, DockItemContextAction) -> Void = { _, _ in },
@@ -43,6 +46,7 @@ final class DisplayCoordinator {
         self.topologyProvider = topologyProvider
         self.preferences = preferences
         self.mouseMonitor = mouseMonitor ?? MouseEdgeMonitor()
+        self.fullScreenMonitor = fullScreenMonitor ?? FullScreenDisplayMonitor()
         self.iconProvider = iconProvider
         self.onItemAction = onItemAction
         self.onItemContextAction = onItemContextAction
@@ -52,6 +56,12 @@ final class DisplayCoordinator {
 
     func start() {
         guard observers.isEmpty else { return }
+        fullScreenMonitor.onFullScreenDisplaysChange = { [weak self] displayIDs in
+            guard let self else { return }
+            self.fullScreenDisplayIDs = displayIDs
+            self.applyFullScreenState()
+        }
+        fullScreenMonitor.start()
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -98,6 +108,9 @@ final class DisplayCoordinator {
         isPreparingSnapshot = false
         mouseMonitor.stop()
         mouseMonitor.needsImmediateMovementSample = nil
+        fullScreenMonitor.stop()
+        fullScreenMonitor.onFullScreenDisplaysChange = nil
+        fullScreenDisplayIDs.removeAll()
         observers.forEach(NotificationCenter.default.removeObserver)
         observers.removeAll()
         panels.values.forEach { $0.destroy() }
@@ -151,6 +164,7 @@ final class DisplayCoordinator {
 
     func rebuildPanels() {
         displays = topologyProvider.currentDisplays()
+        fullScreenMonitor.updateDisplays(displays)
         preferences.registerDisplays(displays)
 
         let eligible = displays.filter {
@@ -182,6 +196,9 @@ final class DisplayCoordinator {
                 panels[display.identity] = panel
             }
             panel.updateDescriptor(display, allDisplays: displays)
+            panel.setFullScreenActive(
+                fullScreenDisplayIDs.contains(display.displayID)
+            )
             panel.apply(
                 snapshot: snapshot,
                 itemAnimationsEnabled: itemAnimationsEnabled
@@ -195,5 +212,15 @@ final class DisplayCoordinator {
 
     private func applyPreferences() {
         rebuildPanels()
+    }
+
+    private func applyFullScreenState() {
+        let displayIDsByIdentity = Dictionary(
+            uniqueKeysWithValues: displays.map { ($0.identity, $0.displayID) }
+        )
+        for (identity, panel) in panels {
+            guard let displayID = displayIDsByIdentity[identity] else { continue }
+            panel.setFullScreenActive(fullScreenDisplayIDs.contains(displayID))
+        }
     }
 }

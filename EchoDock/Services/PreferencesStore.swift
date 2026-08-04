@@ -7,10 +7,12 @@ final class PreferencesStore {
     private enum Key {
         static let isEnabled = "isEnabled"
         static let autoHide = "autoHide"
+        static let autoHideInFullScreen = "autoHideInFullScreen"
         static let reserveSpaceForWindows = "reserveSpaceForWindows"
         static let iconSize = "iconSize"
         static let iconSpacing = "iconSpacing"
         static let dockTransparency = "dockTransparency"
+        static let dockBackgroundBlur = "dockBackgroundBlur"
         static let dockBackgroundStyle = "dockBackgroundStyle"
         static let magnificationEnabled = "magnificationEnabled"
         static let magnificationScale = "magnificationScale"
@@ -36,10 +38,12 @@ final class PreferencesStore {
         defaults.register(defaults: [
             Key.isEnabled: true,
             Key.autoHide: false,
+            Key.autoHideInFullScreen: true,
             Key.reserveSpaceForWindows: false,
             Key.iconSize: 48.0,
             Key.iconSpacing: 5.2,
             Key.dockTransparency: 0.17,
+            Key.dockBackgroundBlur: Double(DockBackgroundBlur.defaultValue),
             Key.dockBackgroundStyle: DockBackgroundStyle.liquidGlass.rawValue,
             Key.magnificationEnabled: true,
             Key.magnificationScale: 1.18,
@@ -66,6 +70,11 @@ final class PreferencesStore {
         set { set(newValue, forKey: Key.autoHide) }
     }
 
+    var autoHideInFullScreen: Bool {
+        get { defaults.bool(forKey: Key.autoHideInFullScreen) }
+        set { set(newValue, forKey: Key.autoHideInFullScreen) }
+    }
+
     var reserveSpaceForWindows: Bool {
         get { defaults.bool(forKey: Key.reserveSpaceForWindows) }
         set { set(newValue, forKey: Key.reserveSpaceForWindows) }
@@ -87,6 +96,13 @@ final class PreferencesStore {
     var dockTransparency: CGFloat {
         get { DockBackgroundTransparency.clamped(CGFloat(defaults.double(forKey: Key.dockTransparency))) }
         set { set(Double(DockBackgroundTransparency.clamped(newValue)), forKey: Key.dockTransparency) }
+    }
+
+    /// Normalized backdrop Gaussian radius beneath Liquid Glass. This is
+    /// independent from the user-facing background transparency preference.
+    var dockBackgroundBlur: CGFloat {
+        get { DockBackgroundBlur.clamped(CGFloat(defaults.double(forKey: Key.dockBackgroundBlur))) }
+        set { set(Double(DockBackgroundBlur.clamped(newValue)), forKey: Key.dockBackgroundBlur) }
     }
 
     var dockBackgroundStyle: DockBackgroundStyle {
@@ -136,6 +152,7 @@ final class PreferencesStore {
             Key.iconSize,
             Key.iconSpacing,
             Key.dockTransparency,
+            Key.dockBackgroundBlur,
             Key.dockBackgroundStyle,
             Key.magnificationEnabled,
             Key.magnificationScale,
