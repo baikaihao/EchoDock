@@ -95,9 +95,6 @@ final class DisplayCoordinator {
                 )
             }
         }
-        mouseMonitor.needsImmediateMovementSample = { [weak self] in
-            self?.panels.values.contains(where: \.needsImmediatePointerSample) == true
-        }
         rebuildPanels()
         mouseMonitor.start()
     }
@@ -107,7 +104,6 @@ final class DisplayCoordinator {
         pendingSnapshots.removeAll()
         isPreparingSnapshot = false
         mouseMonitor.stop()
-        mouseMonitor.needsImmediateMovementSample = nil
         fullScreenMonitor.stop()
         fullScreenMonitor.onFullScreenDisplaysChange = nil
         fullScreenDisplayIDs.removeAll()

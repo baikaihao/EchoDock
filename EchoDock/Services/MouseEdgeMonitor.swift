@@ -3,13 +3,13 @@ import AppKit
 @MainActor
 final class MouseEdgeMonitor: NSObject {
     var onSample: ((CGPoint, Int, Date, Bool) -> Void)?
-    var needsImmediateMovementSample: (() -> Bool)?
 
     private var timer: Timer?
     private var globalMovementMonitor: Any?
     private var localMovementMonitor: Any?
     private var dragPasteboardChangeCount = -1
     private var dragPasteboardContainsFiles = false
+    private var isDragSampleScheduled = false
 
     func start() {
         guard timer == nil else { return }
@@ -24,17 +24,19 @@ final class MouseEdgeMonitor: NSObject {
         self.timer = timer
 
         globalMovementMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+            matching: [.leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
         ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.sampleMovementIfNeeded()
+            // AppKit invokes event-monitor handlers on the main thread. Merge
+            // high-frequency drag callbacks before touching the drag pasteboard.
+            MainActor.assumeIsolated {
+                self?.scheduleDragMovementSample()
             }
         }
         localMovementMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+            matching: [.leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
         ) { [weak self] event in
-            Task { @MainActor [weak self] in
-                self?.sampleMovementIfNeeded()
+            MainActor.assumeIsolated {
+                self?.scheduleDragMovementSample()
             }
             return event
         }
@@ -43,6 +45,7 @@ final class MouseEdgeMonitor: NSObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+        isDragSampleScheduled = false
         removeMovementMonitors()
     }
 
@@ -70,12 +73,12 @@ final class MouseEdgeMonitor: NSObject {
     }
 
     private var isFileDragInProgress: Bool {
-        let pasteboard = NSPasteboard(name: .drag)
         guard NSEvent.pressedMouseButtons != 0 else {
-            dragPasteboardChangeCount = pasteboard.changeCount
+            dragPasteboardChangeCount = -1
             dragPasteboardContainsFiles = false
             return false
         }
+        let pasteboard = NSPasteboard(name: .drag)
         if pasteboard.changeCount != dragPasteboardChangeCount {
             dragPasteboardChangeCount = pasteboard.changeCount
             dragPasteboardContainsFiles = pasteboard.canReadObject(
@@ -86,12 +89,21 @@ final class MouseEdgeMonitor: NSObject {
         return dragPasteboardContainsFiles
     }
 
-    private func sampleMovementIfNeeded() {
+    private func sampleDragMovement() {
         let isFileDrag = isFileDragInProgress
-        guard needsImmediateMovementSample?() == true || isFileDrag else {
-            return
-        }
+        guard isFileDrag else { return }
         publishSample(isFileDrag: isFileDrag)
+    }
+
+    private func scheduleDragMovementSample() {
+        guard !isDragSampleScheduled else { return }
+        isDragSampleScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isDragSampleScheduled = false
+            guard self.timer != nil else { return }
+            self.sampleDragMovement()
+        }
     }
 
     private func removeMovementMonitors() {

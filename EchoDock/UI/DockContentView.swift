@@ -1168,7 +1168,7 @@ struct DockPointerSampleSequence {
     mutating func accept(_ timestamp: TimeInterval) -> Bool {
         guard timestamp.isFinite else { return false }
         if let lastAcceptedTimestamp,
-           timestamp < lastAcceptedTimestamp {
+           timestamp <= lastAcceptedTimestamp {
             return false
         }
         lastAcceptedTimestamp = timestamp
@@ -1178,6 +1178,24 @@ struct DockPointerSampleSequence {
     mutating func discardSamples(before timestamp: TimeInterval) {
         guard timestamp.isFinite else { return }
         lastAcceptedTimestamp = max(lastAcceptedTimestamp ?? timestamp, timestamp)
+    }
+}
+
+enum DockMagnificationFrameClockPolicy {
+    static let pointerIdleGrace: CFTimeInterval = 0.05
+
+    static func keepsClockWarm(
+        isPointerInside: Bool,
+        lastPointerRequestTime: CFTimeInterval?,
+        now: CFTimeInterval
+    ) -> Bool {
+        guard isPointerInside,
+              let lastPointerRequestTime,
+              lastPointerRequestTime.isFinite,
+              now.isFinite else {
+            return false
+        }
+        return now - lastPointerRequestTime < pointerIdleGrace
     }
 }
 
@@ -1285,6 +1303,7 @@ private final class DockStripView: NSView {
     private var previousAnimationTime: CFTimeInterval?
     private var isFrameClockRunning = false
     private var hasPendingPointerRender = false
+    private var lastPointerRenderRequestTime: CFTimeInterval?
     private var pointerSampleSequence = DockPointerSampleSequence()
     private var itemPresenceTransitions: [ApplicationIdentity: DockItemPresenceTransition] = [:]
     private var itemPresenceValues: [ApplicationIdentity: CGFloat] = [:]
@@ -1346,6 +1365,7 @@ private final class DockStripView: NSView {
         clearHoveredButton()
         magnificationTransition.snap(to: 0)
         hasPendingPointerRender = false
+        lastPointerRenderRequestTime = nil
         if !hasActivePresentationAnimation {
             stopMagnificationFrameClock()
         }
@@ -1908,6 +1928,7 @@ private final class DockStripView: NSView {
         }
         stopMagnificationFrameClock()
         hasPendingPointerRender = false
+        lastPointerRenderRequestTime = nil
         finishPresenceAnimations(notifyWidthChange: true)
         finishLaunchBounceAnimations()
         pointerSampleSequence.discardSamples(
@@ -1957,6 +1978,7 @@ private final class DockStripView: NSView {
     private func requestMagnificationRender(_ request: DockMagnificationRenderRequest) {
         if case .pointerChanged = request {
             hasPendingPointerRender = true
+            lastPointerRenderRequestTime = CACurrentMediaTime()
         }
         let plan = DockMagnificationRenderPlan.make(
             request: request,
@@ -2022,18 +2044,29 @@ private final class DockStripView: NSView {
     fileprivate func advanceMagnificationFrame() {
         let hasMagnificationAnimation = !magnificationTransition.isSettled
         let hasPresentationAnimation = hasActivePresentationAnimation
+        let now = CACurrentMediaTime()
+        let keepsFrameClockWarm = DockMagnificationFrameClockPolicy.keepsClockWarm(
+            isPointerInside: isPointerInside,
+            lastPointerRequestTime: lastPointerRenderRequestTime,
+            now: now
+        )
         guard hasMagnificationAnimation
                 || hasPresentationAnimation
-                || hasPendingPointerRender else {
+                || hasPendingPointerRender
+                || keepsFrameClockWarm else {
             stopMagnificationFrameClock()
             return
         }
 
-        let now = CACurrentMediaTime()
         // Keep one shared timeline warm even while insertion is the only active
         // animation. A hover that starts mid-insertion must advance by one
         // display frame, not by the whole time since magnification last moved.
         advanceMagnificationTransition(to: now)
+        guard hasMagnificationAnimation
+                || hasPresentationAnimation
+                || hasPendingPointerRender else {
+            return
+        }
         var requiredWidthChanged = false
         if !itemPresenceTransitions.isEmpty || separatorPresenceTransition != nil {
             requiredWidthChanged = advancePresenceAnimations(to: now)
@@ -2054,7 +2087,12 @@ private final class DockStripView: NSView {
         }
         if magnificationTransition.isSettled,
            !hasActivePresentationAnimation,
-           !hasPendingPointerRender {
+           !hasPendingPointerRender,
+           !DockMagnificationFrameClockPolicy.keepsClockWarm(
+                isPointerInside: isPointerInside,
+                lastPointerRequestTime: lastPointerRenderRequestTime,
+                now: now
+           ) {
             stopMagnificationFrameClock()
         }
     }

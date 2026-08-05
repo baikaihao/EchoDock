@@ -25,6 +25,22 @@ enum NativeDockLockEdge: String, Equatable {
     case right
 }
 
+enum NativeDockEventPolicy {
+    static func canBeBlocked(
+        _ eventType: CGEventType,
+        pressedMouseButtons: Int = 0
+    ) -> Bool {
+        eventType == .mouseMoved
+            && pressedMouseButtons == 0
+    }
+}
+
+enum NativeDockRelocationInputPolicy {
+    static func canRelocate(pressedMouseButtons: Int) -> Bool {
+        pressedMouseButtons == 0
+    }
+}
+
 struct NativeDockLockDisplayGeometry: Equatable {
     let displayID: CGDirectDisplayID
     let frame: CGRect
@@ -371,6 +387,7 @@ enum NativeDockLockGeometry {
 final class NativeDockLockService {
     private static let dockDomain = "com.apple.dock" as CFString
     private static let dockOrientationKey = "orientation" as CFString
+    private static let relocationInputRetryDelay: TimeInterval = 0.15
 
     private(set) var status: NativeDockLockStatus = .disabled {
         didSet {
@@ -733,9 +750,6 @@ final class NativeDockLockService {
         guard isEnabled, eventTap == nil, AXIsProcessTrusted() else { return }
 
         let eventMask = (CGEventMask(1) << CGEventType.mouseMoved.rawValue)
-            | (CGEventMask(1) << CGEventType.leftMouseDragged.rawValue)
-            | (CGEventMask(1) << CGEventType.rightMouseDragged.rawValue)
-            | (CGEventMask(1) << CGEventType.otherMouseDragged.rawValue)
             | (CGEventMask(1) << CGEventType.tapDisabledByTimeout.rawValue)
             | (CGEventMask(1) << CGEventType.tapDisabledByUserInput.rawValue)
 
@@ -782,6 +796,13 @@ final class NativeDockLockService {
             if let eventTap {
                 CGEvent.tapEnable(tap: eventTap, enable: true)
             }
+            return Unmanaged.passUnretained(event)
+        }
+
+        guard NativeDockEventPolicy.canBeBlocked(
+            eventType,
+            pressedMouseButtons: NSEvent.pressedMouseButtons
+        ) else {
             return Unmanaged.passUnretained(event)
         }
 
@@ -859,6 +880,12 @@ final class NativeDockLockService {
             }
             return
         }
+        guard NativeDockRelocationInputPolicy.canRelocate(
+            pressedMouseButtons: NSEvent.pressedMouseButtons
+        ) else {
+            scheduleRelocation(after: Self.relocationInputRetryDelay)
+            return
+        }
         guard let savedPosition = CGEvent(source: nil)?.location,
               let source = CGEventSource(stateID: .hidSystemState) else {
             status = .unavailable
@@ -916,6 +943,13 @@ final class NativeDockLockService {
               relocationGeneration == generation,
               index < points.count else {
             finishRelocation(savedPosition: savedPosition, generation: generation)
+            return
+        }
+        guard NativeDockRelocationInputPolicy.canRelocate(
+            pressedMouseButtons: NSEvent.pressedMouseButtons
+        ) else {
+            cancelRelocation()
+            scheduleRelocation(after: Self.relocationInputRetryDelay)
             return
         }
 

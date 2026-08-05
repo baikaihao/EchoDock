@@ -155,14 +155,6 @@ enum DockSampledPointerEntryPolicy {
 final class DockPanelController {
     let displayIdentity: DisplayIdentity
 
-    var needsImmediatePointerSample: Bool {
-        presentationMode != .suppressed
-            && panel.isVisible
-            && panel.ignoresMouseEvents
-            && state.allowsTooltipPresentation
-            && !isContextMenuPresented
-    }
-
     private let panel = DockPanel()
     private let dragReceiverPanel = DockPanel()
     private let tooltipPanelController = DockTooltipPanelController()
@@ -270,7 +262,8 @@ final class DockPanelController {
             )
             self.contentView.reconcilePointer(
                 screenLocation: screenLocation,
-                timestamp: event.timestamp
+                timestamp: event.timestamp,
+                allowsSyntheticEntry: NSEvent.pressedMouseButtons == 0
             )
         }
         panel.onDraggingEntered = { [weak self] sender in

@@ -86,10 +86,11 @@ final class DockItemButton: NSButton, NSDraggingSource {
         NSMenu.popUpContextMenu(menu, with: event, for: view)
     }
 
-    private let iconImageView = NSImageView()
+    private let iconLayer = CALayer()
     private let runningIndicator = NSView()
     private let failureImageView = NSImageView()
     private(set) var item: DockItem?
+    private var iconImage: NSImage?
     private var iconSize: CGFloat = 48
     private var magnification: CGFloat = 1
     private var presenceProgress: CGFloat = 1
@@ -113,8 +114,10 @@ final class DockItemButton: NSButton, NSDraggingSource {
         target = self
         action = #selector(didPress)
 
-        iconImageView.imageScaling = .scaleProportionallyUpOrDown
-        addSubview(iconImageView)
+        iconLayer.contentsGravity = .resizeAspect
+        iconLayer.magnificationFilter = .linear
+        iconLayer.minificationFilter = .trilinear
+        layer?.addSublayer(iconLayer)
 
         runningIndicator.wantsLayer = true
         runningIndicator.layer?.backgroundColor = NSColor.secondaryLabelColor.cgColor
@@ -135,9 +138,14 @@ final class DockItemButton: NSButton, NSDraggingSource {
         nil
     }
 
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateIconContentsScale()
+    }
+
     override func layout() {
         super.layout()
-        updateIconFrame()
+        updateIconLayer()
         updateAccessoryFrames()
     }
 
@@ -203,22 +211,21 @@ final class DockItemButton: NSButton, NSDraggingSource {
             && self.item?.kind == item.kind
             && self.item?.applicationURL.standardizedFileURL
                 == item.applicationURL.standardizedFileURL
-            && iconImageView.image != nil
+            && iconImage != nil
         self.item = item
         self.iconSize = iconSize
         switch item.kind {
         case .application, .fileShortcut:
             if !canReuseCurrentImage {
-                iconImageView.image = iconProvider.icon(
+                setIconImage(iconProvider.icon(
                     for: item.applicationURL,
                     size: iconSize
-                )
+                ))
             }
         case .trash:
-            iconImageView.image = DockTrashIconProvider.image(for: item.applicationURL)
-            iconImageView.image?.size = NSSize(width: iconSize, height: iconSize)
+            setIconImage(DockTrashIconProvider.image(for: item.applicationURL))
         case .dropPlaceholder:
-            iconImageView.image = nil
+            setIconImage(nil)
         }
         // Use DockContentView's native-looking capsule instead of AppKit's
         // default tooltip, which can truncate names to "Xco…".
@@ -286,7 +293,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
     private func contextMenuEvent(for menu: NSMenu, sourceEvent: NSEvent) -> NSEvent {
         guard let window, let screen = window.screen else { return sourceEvent }
         menu.update()
-        let iconFrameInWindow = iconImageView.convert(iconImageView.bounds, to: nil)
+        let iconFrameInWindow = convert(magnifiedIconFrame, to: nil)
         let iconFrameOnScreen = window.convertToScreen(iconFrameInWindow)
         let menuFrame = DockContextMenuPlacement.menuFrame(
             menuSize: menu.size,
@@ -345,8 +352,8 @@ final class DockItemButton: NSButton, NSDraggingSource {
         guard magnificationChanged
                 || presenceChanged
                 || bounceChanged
-                || !NSEqualRects(iconImageView.frame, targetFrame) else { return }
-        updateIconFrame()
+                || !NSEqualRects(iconLayerFrame, targetFrame) else { return }
+        updateIconLayer()
         updateAccessoryFrames()
     }
 
@@ -367,15 +374,88 @@ final class DockItemButton: NSButton, NSDraggingSource {
         )
     }
 
-    /// Resize the image view itself instead of transforming the whole button.
-    /// Presence changes expand or collapse around the icon's visual center;
-    /// launch bounce is an independent physical vertical translation.
-    private func updateIconFrame() {
-        iconImageView.frame = magnifiedIconFrame
+    /// Keep the decoded icon texture stable and let Core Animation handle the
+    /// per-frame scale. AppKit no longer has to resize and redraw an image view
+    /// for every pointer sample.
+    private func updateIconLayer() {
+        let targetFrame = magnifiedIconFrame
+        let baseSide = max(0.001, iconSize)
+        let scale = max(0.000_1, targetFrame.width / baseSide)
+        let targetBounds = NSRect(
+            x: 0,
+            y: 0,
+            width: baseSide,
+            height: baseSide
+        )
+        let targetPosition = NSPoint(
+            x: targetFrame.midX,
+            y: targetFrame.midY
+        )
+        let targetTransform = CGAffineTransform(scaleX: scale, y: scale)
+        let targetHidden = iconImage == nil || targetFrame.width <= 0.000_1
+
+        // Changing a button's frame can schedule layout immediately after the
+        // presentation pass. Avoid reopening a Core Animation transaction when
+        // that layout has no visual work left to do.
+        guard !NSEqualRects(iconLayer.bounds, targetBounds)
+                || iconLayer.position != targetPosition
+                || iconLayer.affineTransform() != targetTransform
+                || iconLayer.isHidden != targetHidden else { return }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        iconLayer.bounds = targetBounds
+        iconLayer.position = targetPosition
+        iconLayer.setAffineTransform(targetTransform)
+        iconLayer.isHidden = targetHidden
+        CATransaction.commit()
+    }
+
+    private func updateIconContentsScale() {
+        let scale = window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+        guard iconLayer.contentsScale != scale else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        iconLayer.contentsScale = scale
+        CATransaction.commit()
+    }
+
+    private var iconLayerFrame: NSRect {
+        let side = iconLayer.bounds.width * iconLayer.affineTransform().a
+        return NSRect(
+            x: iconLayer.position.x - side / 2,
+            y: iconLayer.position.y - side / 2,
+            width: side,
+            height: side
+        )
+    }
+
+    private func setIconImage(_ image: NSImage?) {
+        iconImage = image
+        let contents: CGImage?
+        if let image {
+            var proposedRect = NSRect(origin: .zero, size: image.size)
+            contents = image.cgImage(
+                forProposedRect: &proposedRect,
+                context: nil,
+                hints: nil
+            )
+        } else {
+            contents = nil
+        }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        iconLayer.contents = contents
+        CATransaction.commit()
+        updateIconContentsScale()
+        updateIconLayer()
     }
 
     func iconFrame(in view: NSView) -> NSRect {
-        iconImageView.convert(iconImageView.bounds, to: view)
+        convert(magnifiedIconFrame, to: view)
     }
 
     /// Keeps horizontal ownership stable while neighboring icons move, but
@@ -539,7 +619,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
               let shortcutID = item.kind.shortcutID,
               case let .fileShortcut(_, _, isAvailable) = item.kind,
               isAvailable,
-              let icon = iconImageView.image else { return }
+              let icon = iconImage else { return }
         let pasteboardItem = NSPasteboardItem()
         let payload = DockInternalShortcutDrag(
             shortcutID: shortcutID,
@@ -554,7 +634,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
         )
         let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
         draggingItem.setDraggingFrame(
-            iconImageView.convert(iconImageView.bounds, to: self),
+            magnifiedIconFrame,
             contents: icon
         )
         _ = beginDraggingSession(with: [draggingItem], event: event, source: self)
