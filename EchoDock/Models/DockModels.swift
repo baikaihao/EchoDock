@@ -35,6 +35,24 @@ enum DockBackgroundStyleAvailability {
     }
 }
 
+enum DockBackgroundTuningPolicy {
+    static func allowsTransparencyTuning(
+        reduceTransparency: Bool = false
+    ) -> Bool {
+        !reduceTransparency
+    }
+
+    static func allowsBackgroundBlurTuning(
+        supportsLiquidGlass: Bool,
+        selectedStyle: DockBackgroundStyle,
+        reduceTransparency: Bool = false
+    ) -> Bool {
+        allowsTransparencyTuning(reduceTransparency: reduceTransparency)
+            && supportsLiquidGlass
+            && selectedStyle == .classic
+    }
+}
+
 struct ApplicationIdentity: Hashable, Codable, Sendable {
     let rawValue: String
 

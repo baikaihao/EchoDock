@@ -258,4 +258,39 @@ final class DockPointerSchedulingTests: XCTestCase {
             }
         }
     }
+
+    func testMagnificationExpandsTheDynamicBackgroundContentFrame() {
+        let idleLayout = DockMagnificationLayout.make(
+            itemCount: 6,
+            pinnedItemCount: 2,
+            iconSize: 48,
+            spacing: 6,
+            maximumScale: 1.5,
+            influenceRange: 3,
+            containerWidth: 620,
+            height: 80,
+            pointerX: nil
+        )
+        let pointerX = idleLayout.baseButtonFrames[2].midX
+        let magnifiedLayout = DockMagnificationLayout.make(
+            itemCount: 6,
+            pinnedItemCount: 2,
+            iconSize: 48,
+            spacing: 6,
+            maximumScale: 1.5,
+            influenceRange: 3,
+            containerWidth: 620,
+            height: 80,
+            pointerX: pointerX
+        )
+
+        XCTAssertGreaterThan(
+            magnifiedLayout.visualContentFrame.width,
+            idleLayout.visualContentFrame.width
+        )
+        XCTAssertNotEqual(
+            magnifiedLayout.visualContentFrame,
+            idleLayout.visualContentFrame
+        )
+    }
 }

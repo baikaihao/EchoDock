@@ -29,6 +29,7 @@ final class AppearanceSettingsViewController: NSViewController {
         action: nil
     )
     private var preferencesObserver: NSObjectProtocol?
+    private var accessibilityObserver: NSObjectProtocol?
 
     init(
         preferences: PreferencesStore,
@@ -47,6 +48,9 @@ final class AppearanceSettingsViewController: NSViewController {
         if let preferencesObserver {
             NotificationCenter.default.removeObserver(preferencesObserver)
         }
+        if let accessibilityObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(accessibilityObserver)
+        }
     }
 
     override func loadView() {
@@ -61,6 +65,15 @@ final class AppearanceSettingsViewController: NSViewController {
             preferencesObserver = NotificationCenter.default.addObserver(
                 forName: .echoDockPreferencesDidChange,
                 object: preferences,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.refresh() }
+            }
+        }
+        if accessibilityObserver == nil {
+            accessibilityObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+                object: nil,
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.refresh() }
@@ -86,7 +99,18 @@ final class AppearanceSettingsViewController: NSViewController {
             preferences.dockBackgroundBlur * 100
         )
         backgroundStyleControl.selectedSegment = preferences.dockBackgroundStyle == .classic ? 0 : 1
-        backgroundBlurSlider.isEnabled = supportsBackgroundStyleSelection
+        let allowsTransparencyTuning = DockBackgroundTuningPolicy.allowsTransparencyTuning(
+            reduceTransparency: NSWorkspace.shared
+                .accessibilityDisplayShouldReduceTransparency
+        )
+        transparencySlider.isEnabled = allowsTransparencyTuning
+        backgroundBlurSlider.isEnabled = DockBackgroundTuningPolicy
+            .allowsBackgroundBlurTuning(
+                supportsLiquidGlass: supportsBackgroundStyleSelection,
+                selectedStyle: preferences.dockBackgroundStyle,
+                reduceTransparency: NSWorkspace.shared
+                    .accessibilityDisplayShouldReduceTransparency
+            )
         magnificationSwitch.state = preferences.magnificationEnabled ? .on : .off
         magnificationScaleSlider.doubleValue = Double(preferences.magnificationScale)
         magnificationScaleValue.stringValue = L10n.format(
@@ -375,6 +399,7 @@ final class AppearanceSettingsViewController: NSViewController {
         preferences.dockBackgroundStyle = sender.selectedSegment == 0
             ? .classic
             : .liquidGlass
+        refresh()
     }
 
     @objc private func magnificationChanged(_ sender: NSSwitch) {
