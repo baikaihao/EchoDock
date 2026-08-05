@@ -7,6 +7,64 @@ enum DockRunningIndicatorPresentationPolicy {
     }
 }
 
+enum DockPrimaryPressAction: Equatable {
+    case continueTracking
+    case activate
+    case beginFileDrag
+    case presentContextMenu
+    case cancel
+}
+
+enum DockPrimaryPressPolicy {
+    static let minimumPressDuration: TimeInterval = NSEvent.doubleClickInterval
+    static let movementTolerance: CGFloat = 4
+    static let primaryMouseButtonMask = 1
+
+    static func contextMenuEventType(
+        for sourceEventType: NSEvent.EventType
+    ) -> NSEvent.EventType {
+        sourceEventType == .leftMouseDown ? .leftMouseDown : .rightMouseDown
+    }
+
+    static func fileDragEventType(
+        for sourceEventType: NSEvent.EventType
+    ) -> NSEvent.EventType {
+        sourceEventType == .mouseMoved ? .leftMouseDragged : sourceEventType
+    }
+
+    static func exceededMovementTolerance(
+        from startPoint: NSPoint,
+        to point: NSPoint
+    ) -> Bool {
+        hypot(point.x - startPoint.x, point.y - startPoint.y) >= movementTolerance
+    }
+
+    static func action(
+        eventType: NSEvent.EventType?,
+        elapsed: TimeInterval,
+        movementToleranceExceeded: Bool,
+        isPointerInside: Bool,
+        supportsFileDrag: Bool
+    ) -> DockPrimaryPressAction {
+        if movementToleranceExceeded,
+           supportsFileDrag,
+           eventType == .leftMouseDragged || eventType == .mouseMoved {
+            return .beginFileDrag
+        }
+
+        if !movementToleranceExceeded,
+           isPointerInside,
+           elapsed >= minimumPressDuration {
+            return .presentContextMenu
+        }
+
+        if eventType == .leftMouseUp {
+            return isPointerInside ? .activate : .cancel
+        }
+        return .continueTracking
+    }
+}
+
 private enum DockTrashIconProvider {
     private static let emptyResourcePath = "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/TrashIcon.icns"
     private static let fullResourcePath = "/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/FullTrashIcon.icns"
@@ -87,6 +145,8 @@ final class DockItemButton: NSButton, NSDraggingSource {
     }
 
     private let iconLayer = CALayer()
+    private let primaryPressOverlayLayer = CALayer()
+    private let primaryPressMaskLayer = CALayer()
     private let runningIndicatorLayer = CALayer()
     private let failureIndicatorLayer = CALayer()
     private let failureIndicatorMaskLayer = CALayer()
@@ -100,8 +160,10 @@ final class DockItemButton: NSButton, NSDraggingSource {
     private var visualSlotWidth: CGFloat?
     private var activeContextMenu: NSMenu?
     private var isContextMenuPresented = false
-    private var isTrackingFileDrag = false
+    private var isTrackingPrimaryPress = false
+    private var isFileDragSessionActive = false
     private var isDropTargeted = false
+    private var isPrimaryPressHighlighted = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -121,6 +183,15 @@ final class DockItemButton: NSButton, NSDraggingSource {
         iconLayer.contentsGravity = .resizeAspect
         iconLayer.magnificationFilter = .linear
         iconLayer.minificationFilter = .trilinear
+        primaryPressOverlayLayer.backgroundColor = NSColor.black
+            .withAlphaComponent(0.48)
+            .cgColor
+        primaryPressOverlayLayer.isHidden = true
+        primaryPressOverlayLayer.mask = primaryPressMaskLayer
+        primaryPressMaskLayer.contentsGravity = .resizeAspect
+        primaryPressMaskLayer.magnificationFilter = .linear
+        primaryPressMaskLayer.minificationFilter = .trilinear
+        iconLayer.addSublayer(primaryPressOverlayLayer)
         layer?.addSublayer(iconLayer)
 
         runningIndicatorLayer.backgroundColor = NSColor.secondaryLabelColor.cgColor
@@ -155,7 +226,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard isEnabled, super.hitTest(point) != nil else { return nil }
         // Image and status subviews are decorative. Returning the button keeps
-        // clicks on the visible icon on the NSButton action path.
+        // clicks on the visible icon on its primary interaction path.
         return self
     }
 
@@ -170,16 +241,19 @@ final class DockItemButton: NSButton, NSDraggingSource {
     override func mouseDown(with event: NSEvent) {
         if event.modifierFlags.contains(.control) {
             presentContextMenu(for: event)
-        } else if item?.kind.shortcutID != nil {
-            trackFileMouseDown(event)
-        } else {
-            super.mouseDown(with: event)
+            return
         }
+
+        setPrimaryPressHighlighted(true)
+        defer { setPrimaryPressHighlighted(false) }
+        trackPrimaryMouseDown(event)
     }
 
     override func mouseDragged(with event: NSEvent) {
         super.mouseDragged(with: event)
-        guard item?.kind.shortcutID != nil, !isTrackingFileDrag else { return }
+        guard item?.kind.shortcutID != nil,
+              !isTrackingPrimaryPress,
+              !isFileDragSessionActive else { return }
         beginFileDrag(with: event)
     }
 
@@ -309,7 +383,9 @@ final class DockItemButton: NSButton, NSDraggingSource {
         ))
 
         return NSEvent.mouseEvent(
-            with: .rightMouseDown,
+            with: DockPrimaryPressPolicy.contextMenuEventType(
+                for: sourceEvent.type
+            ),
             location: topLeftInWindow,
             modifierFlags: sourceEvent.modifierFlags,
             timestamp: sourceEvent.timestamp,
@@ -419,6 +495,10 @@ final class DockItemButton: NSButton, NSDraggingSource {
         )
         let targetIconTransform = CGAffineTransform(scaleX: scale, y: scale)
         let targetIconHidden = iconImage == nil || targetIconFrame.width <= 0.000_1
+        let targetOverlayPosition = NSPoint(
+            x: targetIconBounds.midX,
+            y: targetIconBounds.midY
+        )
 
         let indicatorY = isFlipped ? bounds.maxY - 5 : bounds.minY + 1
         let targetIndicatorBounds = NSRect(x: 0, y: 0, width: 4, height: 4)
@@ -440,6 +520,10 @@ final class DockItemButton: NSButton, NSDraggingSource {
                 || iconLayer.position != targetIconPosition
                 || iconLayer.affineTransform() != targetIconTransform
                 || iconLayer.isHidden != targetIconHidden
+                || !NSEqualRects(primaryPressOverlayLayer.bounds, targetIconBounds)
+                || primaryPressOverlayLayer.position != targetOverlayPosition
+                || !NSEqualRects(primaryPressMaskLayer.bounds, targetIconBounds)
+                || primaryPressMaskLayer.position != targetOverlayPosition
                 || !NSEqualRects(runningIndicatorLayer.bounds, targetIndicatorBounds)
                 || runningIndicatorLayer.position != targetIndicatorPosition
                 || !NSEqualRects(failureIndicatorLayer.bounds, targetFailureBounds)
@@ -452,6 +536,10 @@ final class DockItemButton: NSButton, NSDraggingSource {
             iconLayer.position = targetIconPosition
             iconLayer.setAffineTransform(targetIconTransform)
             iconLayer.isHidden = targetIconHidden
+            primaryPressOverlayLayer.bounds = targetIconBounds
+            primaryPressOverlayLayer.position = targetOverlayPosition
+            primaryPressMaskLayer.bounds = targetIconBounds
+            primaryPressMaskLayer.position = targetOverlayPosition
             runningIndicatorLayer.bounds = targetIndicatorBounds
             runningIndicatorLayer.position = targetIndicatorPosition
             failureIndicatorLayer.bounds = targetFailureBounds
@@ -466,11 +554,15 @@ final class DockItemButton: NSButton, NSDraggingSource {
             ?? NSScreen.main?.backingScaleFactor
             ?? 2
         guard iconLayer.contentsScale != scale
+                || primaryPressOverlayLayer.contentsScale != scale
+                || primaryPressMaskLayer.contentsScale != scale
                 || runningIndicatorLayer.contentsScale != scale
                 || failureIndicatorLayer.contentsScale != scale
                 || failureIndicatorMaskLayer.contentsScale != scale else { return }
         withoutImplicitLayerActions {
             iconLayer.contentsScale = scale
+            primaryPressOverlayLayer.contentsScale = scale
+            primaryPressMaskLayer.contentsScale = scale
             runningIndicatorLayer.contentsScale = scale
             failureIndicatorLayer.contentsScale = scale
             failureIndicatorMaskLayer.contentsScale = scale
@@ -493,9 +585,18 @@ final class DockItemButton: NSButton, NSDraggingSource {
 
         withoutImplicitLayerActions {
             iconLayer.contents = contents
+            primaryPressMaskLayer.contents = contents
         }
         updateIconContentsScale()
         updatePresentationLayers()
+    }
+
+    private func setPrimaryPressHighlighted(_ highlighted: Bool) {
+        guard isPrimaryPressHighlighted != highlighted else { return }
+        isPrimaryPressHighlighted = highlighted
+        withoutImplicitLayerActions {
+            primaryPressOverlayLayer.isHidden = !highlighted
+        }
     }
 
     func iconFrame(in view: NSView) -> NSRect {
@@ -652,30 +753,142 @@ final class DockItemButton: NSButton, NSDraggingSource {
         onContextMenuPresentationChange?(self, presented)
     }
 
-    private func trackFileMouseDown(_ event: NSEvent) {
-        guard let window, let item, item.kind.shortcutID != nil else { return }
-        isTrackingFileDrag = true
-        defer { isTrackingFileDrag = false }
-        let start = event.locationInWindow
-        while let next = window.nextEvent(matching: [
-            .leftMouseDragged,
-            .leftMouseUp,
-            .mouseMoved
-        ]) {
-            switch next.type {
-            case .leftMouseDragged:
-                let point = next.locationInWindow
-                if hypot(point.x - start.x, point.y - start.y) >= 4 {
-                    beginFileDrag(with: next)
+    private func trackPrimaryMouseDown(_ sourceEvent: NSEvent) {
+        guard sourceEvent.type == .leftMouseDown,
+              let window,
+              window.isVisible,
+              isEnabled,
+              let pressedItem = item else { return }
+
+        let pressedIdentity = pressedItem.identity
+        let supportsFileDrag = pressedItem.kind.shortcutID != nil
+        let startScreenPoint = window.convertPoint(
+            toScreen: sourceEvent.locationInWindow
+        )
+        let startTime = ProcessInfo.processInfo.systemUptime
+        let longPressDeadline = Date(
+            timeIntervalSinceNow: DockPrimaryPressPolicy.minimumPressDuration
+        )
+        var movementToleranceExceeded = false
+        var isLongPressEligible = true
+
+        isTrackingPrimaryPress = true
+        defer { isTrackingPrimaryPress = false }
+
+        while window.isVisible,
+              isEnabled,
+              item?.identity == pressedIdentity {
+            let waitUntil = isLongPressEligible ? longPressDeadline : .distantFuture
+            guard let nextEvent = window.nextEvent(
+                matching: [.leftMouseDragged, .leftMouseUp, .mouseMoved],
+                until: waitUntil,
+                inMode: .eventTracking,
+                dequeue: true
+            ) else {
+                guard isLongPressEligible else { continue }
+
+                let currentScreenPoint = NSEvent.mouseLocation
+                movementToleranceExceeded = movementToleranceExceeded
+                    || DockPrimaryPressPolicy.exceededMovementTolerance(
+                        from: startScreenPoint,
+                        to: currentScreenPoint
+                    )
+                guard NSEvent.pressedMouseButtons
+                        & DockPrimaryPressPolicy.primaryMouseButtonMask != 0 else {
                     return
                 }
-            case .leftMouseUp:
-                onPress?(item)
-                return
-            default:
+
+                let isPointerInside = containsScreenPoint(
+                    currentScreenPoint,
+                    in: window
+                )
+                let action = DockPrimaryPressPolicy.action(
+                    eventType: nil,
+                    elapsed: max(
+                        DockPrimaryPressPolicy.minimumPressDuration,
+                        ProcessInfo.processInfo.systemUptime - startTime
+                    ),
+                    movementToleranceExceeded: movementToleranceExceeded,
+                    isPointerInside: isPointerInside,
+                    supportsFileDrag: supportsFileDrag
+                )
+                if action == .presentContextMenu,
+                   isEnabled,
+                   item?.identity == pressedIdentity {
+                    presentContextMenu(for: sourceEvent)
+                    return
+                }
+
+                // Missing the deadline while outside or after moving cancels
+                // only the long press. A later mouseUp still completes or
+                // cancels the ordinary click normally.
+                isLongPressEligible = false
                 continue
             }
+
+            let screenPoint = window.convertPoint(
+                toScreen: nextEvent.locationInWindow
+            )
+            movementToleranceExceeded = movementToleranceExceeded
+                || DockPrimaryPressPolicy.exceededMovementTolerance(
+                    from: startScreenPoint,
+                    to: screenPoint
+                )
+            if movementToleranceExceeded {
+                isLongPressEligible = false
+            }
+
+            let action = DockPrimaryPressPolicy.action(
+                eventType: nextEvent.type,
+                elapsed: ProcessInfo.processInfo.systemUptime - startTime,
+                movementToleranceExceeded: movementToleranceExceeded,
+                isPointerInside: containsWindowPoint(nextEvent.locationInWindow),
+                supportsFileDrag: supportsFileDrag
+            )
+            switch action {
+            case .continueTracking:
+                continue
+            case .activate:
+                guard let currentItem = item,
+                      currentItem.identity == pressedIdentity else { return }
+                onPress?(currentItem)
+                return
+            case .beginFileDrag:
+                beginFileDrag(with: normalizedFileDragEvent(nextEvent))
+                return
+            case .presentContextMenu:
+                presentContextMenu(for: sourceEvent)
+                return
+            case .cancel:
+                return
+            }
         }
+    }
+
+    private func containsWindowPoint(_ point: NSPoint) -> Bool {
+        bounds.contains(convert(point, from: nil))
+    }
+
+    private func containsScreenPoint(_ point: NSPoint, in window: NSWindow) -> Bool {
+        containsWindowPoint(window.convertPoint(fromScreen: point))
+    }
+
+    private func normalizedFileDragEvent(_ sourceEvent: NSEvent) -> NSEvent {
+        let eventType = DockPrimaryPressPolicy.fileDragEventType(
+            for: sourceEvent.type
+        )
+        guard eventType != sourceEvent.type, let window else { return sourceEvent }
+        return NSEvent.mouseEvent(
+            with: eventType,
+            location: sourceEvent.locationInWindow,
+            modifierFlags: sourceEvent.modifierFlags,
+            timestamp: sourceEvent.timestamp,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: sourceEvent.eventNumber,
+            clickCount: sourceEvent.clickCount,
+            pressure: sourceEvent.pressure
+        ) ?? sourceEvent
     }
 
     private func beginFileDrag(with event: NSEvent) {
@@ -701,6 +914,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
             magnifiedIconFrame,
             contents: icon
         )
+        isFileDragSessionActive = true
         _ = beginDraggingSession(with: [draggingItem], event: event, source: self)
     }
 
@@ -716,7 +930,8 @@ final class DockItemButton: NSButton, NSDraggingSource {
         endedAt screenPoint: NSPoint,
         operation: NSDragOperation
     ) {
-        isTrackingFileDrag = false
+        isTrackingPrimaryPress = false
+        isFileDragSessionActive = false
     }
 
 }

@@ -2,6 +2,150 @@ import XCTest
 @testable import EchoDock
 
 final class DockPointerSchedulingTests: XCTestCase {
+    func testPrimaryShortPressActivatesOnlyWhenReleasedInside() {
+        XCTAssertEqual(
+            DockPrimaryPressPolicy.action(
+                eventType: .leftMouseUp,
+                elapsed: DockPrimaryPressPolicy.minimumPressDuration - 0.01,
+                movementToleranceExceeded: false,
+                isPointerInside: true,
+                supportsFileDrag: false
+            ),
+            .activate
+        )
+        XCTAssertEqual(
+            DockPrimaryPressPolicy.action(
+                eventType: .leftMouseUp,
+                elapsed: DockPrimaryPressPolicy.minimumPressDuration - 0.01,
+                movementToleranceExceeded: false,
+                isPointerInside: false,
+                supportsFileDrag: false
+            ),
+            .cancel
+        )
+    }
+
+    func testStationaryPrimaryPressPresentsContextMenuAtThreshold() {
+        XCTAssertEqual(
+            DockPrimaryPressPolicy.action(
+                eventType: nil,
+                elapsed: DockPrimaryPressPolicy.minimumPressDuration - 0.01,
+                movementToleranceExceeded: false,
+                isPointerInside: true,
+                supportsFileDrag: false
+            ),
+            .continueTracking
+        )
+        XCTAssertEqual(
+            DockPrimaryPressPolicy.action(
+                eventType: nil,
+                elapsed: DockPrimaryPressPolicy.minimumPressDuration,
+                movementToleranceExceeded: false,
+                isPointerInside: true,
+                supportsFileDrag: false
+            ),
+            .presentContextMenu
+        )
+    }
+
+    func testLongPressWinsOverMouseUpDeliveredAfterThreshold() {
+        XCTAssertEqual(
+            DockPrimaryPressPolicy.action(
+                eventType: .leftMouseUp,
+                elapsed: DockPrimaryPressPolicy.minimumPressDuration + 0.01,
+                movementToleranceExceeded: false,
+                isPointerInside: true,
+                supportsFileDrag: false
+            ),
+            .presentContextMenu
+        )
+    }
+
+    func testShortcutMovementStartsDragBeforeLongPress() {
+        for eventType: NSEvent.EventType in [.leftMouseDragged, .mouseMoved] {
+            XCTAssertEqual(
+                DockPrimaryPressPolicy.action(
+                    eventType: eventType,
+                    elapsed: DockPrimaryPressPolicy.minimumPressDuration + 0.1,
+                    movementToleranceExceeded: true,
+                    isPointerInside: true,
+                    supportsFileDrag: true
+                ),
+                .beginFileDrag
+            )
+        }
+        XCTAssertEqual(
+            DockPrimaryPressPolicy.action(
+                eventType: .leftMouseDragged,
+                elapsed: DockPrimaryPressPolicy.minimumPressDuration + 0.1,
+                movementToleranceExceeded: true,
+                isPointerInside: true,
+                supportsFileDrag: false
+            ),
+            .continueTracking
+        )
+    }
+
+    func testLongPressMenuAndFallbackDragKeepPrimaryMouseEventFamily() {
+        XCTAssertEqual(
+            DockPrimaryPressPolicy.contextMenuEventType(for: .leftMouseDown),
+            .leftMouseDown
+        )
+        XCTAssertEqual(
+            DockPrimaryPressPolicy.contextMenuEventType(for: .rightMouseDown),
+            .rightMouseDown
+        )
+        XCTAssertEqual(
+            DockPrimaryPressPolicy.fileDragEventType(for: .mouseMoved),
+            .leftMouseDragged
+        )
+        XCTAssertEqual(
+            DockPrimaryPressPolicy.fileDragEventType(for: .leftMouseDragged),
+            .leftMouseDragged
+        )
+    }
+
+    func testMovementToleranceIsInclusiveAndCancelsLongPress() {
+        let start = NSPoint(x: 10, y: 10)
+        XCTAssertFalse(DockPrimaryPressPolicy.exceededMovementTolerance(
+            from: start,
+            to: NSPoint(x: 13.99, y: 10)
+        ))
+        XCTAssertTrue(DockPrimaryPressPolicy.exceededMovementTolerance(
+            from: start,
+            to: NSPoint(x: 14, y: 10)
+        ))
+        XCTAssertEqual(
+            DockPrimaryPressPolicy.action(
+                eventType: nil,
+                elapsed: DockPrimaryPressPolicy.minimumPressDuration,
+                movementToleranceExceeded: true,
+                isPointerInside: true,
+                supportsFileDrag: false
+            ),
+            .continueTracking
+        )
+    }
+
+    func testTrackingAreaIsReadOnlyForEntryAndExitEvents() {
+        XCTAssertTrue(DockTrackingAreaEventPolicy.carriesTrackingArea(.mouseEntered))
+        XCTAssertTrue(DockTrackingAreaEventPolicy.carriesTrackingArea(.mouseExited))
+        XCTAssertFalse(DockTrackingAreaEventPolicy.carriesTrackingArea(.mouseMoved))
+        XCTAssertFalse(DockTrackingAreaEventPolicy.carriesTrackingArea(.leftMouseDragged))
+    }
+
+    func testTrackingExitKeepsMagnificationWhileMouseButtonIsPressed() {
+        XCTAssertFalse(DockPointerExitPolicy.shouldCancelInteraction(
+            pressedMouseButtons: 1
+        ))
+        XCTAssertFalse(DockPointerExitPolicy.shouldCancelInteraction(
+            pressedMouseButtons: 1 << 2
+        ))
+        XCTAssertTrue(DockPointerExitPolicy.shouldCancelInteraction(
+            pressedMouseButtons: 0
+        ))
+    }
+
     func testPointerSequenceRejectsDuplicateAndOutOfOrderEvents() {
         var sequence = DockPointerSampleSequence()
 
