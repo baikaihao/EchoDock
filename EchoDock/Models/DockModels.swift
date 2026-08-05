@@ -37,9 +37,12 @@ enum DockBackgroundStyleAvailability {
 
 enum DockBackgroundTuningPolicy {
     static func allowsTransparencyTuning(
+        supportsLiquidGlass: Bool,
+        selectedStyle: DockBackgroundStyle,
         reduceTransparency: Bool = false
     ) -> Bool {
         !reduceTransparency
+            && (!supportsLiquidGlass || selectedStyle == .classic)
     }
 
     static func allowsBackgroundBlurTuning(
@@ -47,7 +50,11 @@ enum DockBackgroundTuningPolicy {
         selectedStyle: DockBackgroundStyle,
         reduceTransparency: Bool = false
     ) -> Bool {
-        allowsTransparencyTuning(reduceTransparency: reduceTransparency)
+        allowsTransparencyTuning(
+            supportsLiquidGlass: supportsLiquidGlass,
+            selectedStyle: selectedStyle,
+            reduceTransparency: reduceTransparency
+        )
             && supportsLiquidGlass
             && selectedStyle == .classic
     }

@@ -224,7 +224,10 @@ final class DockItemButton: NSButton, NSDraggingSource {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        guard isEnabled, super.hitTest(point) != nil else { return nil }
+        guard isEnabled,
+              !isHidden,
+              alphaValue > 0.000_1,
+              containsInteractionPoint(point) else { return nil }
         // Image and status subviews are decorative. Returning the button keeps
         // clicks on the visible icon on its primary interaction path.
         return self
@@ -620,6 +623,10 @@ final class DockItemButton: NSButton, NSDraggingSource {
         )
     }
 
+    func containsInteractionPoint(_ point: NSPoint) -> Bool {
+        bounds.contains(point) || magnifiedIconFrame.contains(point)
+    }
+
     private static func cgImage(from image: NSImage?) -> CGImage? {
         guard let image else { return nil }
         var proposedRect = NSRect(origin: .zero, size: image.size)
@@ -866,7 +873,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
     }
 
     private func containsWindowPoint(_ point: NSPoint) -> Bool {
-        bounds.contains(convert(point, from: nil))
+        containsInteractionPoint(convert(point, from: nil))
     }
 
     private func containsScreenPoint(_ point: NSPoint, in window: NSWindow) -> Bool {

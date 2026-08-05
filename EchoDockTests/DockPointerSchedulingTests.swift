@@ -218,6 +218,59 @@ final class DockPointerSchedulingTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testMagnifiedButtonAcceptsVisibleIconOutsideStableViewFrame() {
+        let button = DockItemButton(
+            frame: NSRect(x: 0, y: 0, width: 54, height: 72)
+        )
+        button.setPresentation(
+            magnification: 1.8,
+            presenceProgress: 1,
+            visualSlotCenterOffsetX: 18,
+            visualSlotWidth: 86
+        )
+        let iconFrame = button.iconFrame(in: button)
+        let edgePoints = [
+            NSPoint(x: iconFrame.minX + 0.5, y: iconFrame.midY),
+            NSPoint(x: iconFrame.maxX - 0.5, y: iconFrame.midY),
+            NSPoint(x: iconFrame.midX, y: iconFrame.minY + 0.5),
+            NSPoint(x: iconFrame.midX, y: iconFrame.maxY - 0.5)
+        ]
+        let overflowPoints = edgePoints.filter {
+            !button.bounds.contains($0)
+        }
+
+        XCTAssertGreaterThanOrEqual(overflowPoints.count, 2)
+        for point in overflowPoints {
+            XCTAssertTrue(button.containsInteractionPoint(point))
+            XCTAssertTrue(button.hitTest(point) === button)
+        }
+    }
+
+    func testVisualButtonHitResolverPrefersTheTopmostMagnifiedIcon() {
+        let overlappingPoint = NSPoint(x: 80, y: 60)
+        let targets = [
+            DockVisualButtonHitTarget(
+                buttonIndex: 0,
+                frame: NSRect(x: 20, y: 8, width: 64, height: 64),
+                zPosition: 1.2
+            ),
+            DockVisualButtonHitTarget(
+                buttonIndex: 1,
+                frame: NSRect(x: 36, y: 4, width: 88, height: 88),
+                zPosition: 1.8
+            )
+        ]
+
+        XCTAssertEqual(
+            DockVisualButtonHitResolver.buttonIndex(
+                at: overlappingPoint,
+                targets: targets
+            ),
+            1
+        )
+    }
+
     func testMagnificationKeepsPointerInTheSameLogicalButtonSlot() {
         let baseLayout = DockMagnificationLayout.make(
             itemCount: 6,

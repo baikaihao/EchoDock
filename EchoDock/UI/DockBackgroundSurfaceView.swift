@@ -84,29 +84,6 @@ enum DockBackgroundRim {
     }
 }
 
-enum DockLiquidGlassPresentation {
-    static let standardRimOpacity: CGFloat = 0.38
-    static let increasedContrastRimOpacity: CGFloat = 0.62
-
-    static func effectOpacity(
-        transparency: CGFloat,
-        accessibility: DockBackgroundAccessibilityOptions
-    ) -> CGFloat {
-        if accessibility.reduceTransparency || accessibility.increaseContrast {
-            return 1
-        }
-        return DockBackgroundTransparency.materialOpacity(for: transparency)
-    }
-
-    static func rimOpacity(
-        accessibility: DockBackgroundAccessibilityOptions
-    ) -> CGFloat {
-        accessibility.increaseContrast
-            ? increasedContrastRimOpacity
-            : standardRimOpacity
-    }
-}
-
 struct DockBackgroundInteractionState: Equatable {
     let visualContentFrame: NSRect
 
@@ -120,8 +97,12 @@ final class DockBackgroundSurfaceView: NSView {
     private static let gaussianBlurRadiusKeyPath =
         "filters.\(gaussianBlurFilterName).inputRadius"
 
+    private let contentHost = NSView()
     private let rimLayer = CALayer()
     private let surfaceVisibilityMaskLayer = CALayer()
+    private weak var hostedContentView: NSView?
+    private weak var interactionRoot: NSView?
+    private var hostedHitTest: ((NSPoint) -> NSView?)?
     private var surfaceRoot: NSView?
     private var baseSurface: NSView?
     private var gaussianBackdropSurface: DockGaussianBackdropView?
@@ -133,6 +114,8 @@ final class DockBackgroundSurfaceView: NSView {
     private var bodyHeight: CGFloat = 72
     private var selectedStyle: DockBackgroundStyle = .liquidGlass
     private var visibleBodyFrame: NSRect?
+    private var hostedContentFrame: NSRect?
+    private var currentBodyRect: NSRect = .zero
     private var previousBounds: NSRect = .null
     private var previousBodyRect: NSRect = .null
 
@@ -146,6 +129,8 @@ final class DockBackgroundSurfaceView: NSView {
         layer?.shadowRadius = 0
         layer?.shadowOffset = .zero
         layer?.shadowPath = nil
+
+        contentHost.clipsToBounds = false
 
         rimLayer.backgroundColor = nil
         rimLayer.borderWidth = 0.7
@@ -170,7 +155,16 @@ final class DockBackgroundSurfaceView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
+        guard !isHidden,
+              alphaValue > 0,
+              let interactionRoot else {
+            return nil
+        }
+        let pointInInteractionRoot = interactionRoot.convert(point, from: self)
+        if let hostedHit = hostedHitTest?(pointInInteractionRoot) {
+            return hostedHit
+        }
+        return interactionRoot.hitTest(pointInInteractionRoot)
     }
 
     deinit {
@@ -198,6 +192,34 @@ final class DockBackgroundSurfaceView: NSView {
         needsLayout = true
     }
 
+    func hostContent(
+        _ view: NSView,
+        interactionRoot: NSView? = nil,
+        hostedHitTest: ((NSPoint) -> NSView?)? = nil
+    ) {
+        if hostedContentView !== view {
+            hostedContentView?.removeFromSuperview()
+            view.removeFromSuperview()
+            contentHost.addSubview(view)
+            hostedContentView = view
+        }
+        self.interactionRoot = interactionRoot ?? view
+        self.hostedHitTest = hostedHitTest
+        attachContentHost()
+        applyHostedContentFrame(bodyRect: currentBodyRect)
+        needsLayout = true
+    }
+
+    /// The frame is expressed in this view's coordinates. Liquid Glass keeps
+    /// its content root body-sized, so the hosted view receives the inverse
+    /// body offset and stays fixed while the glass changes width and origin.
+    func setHostedContentFrame(_ frame: NSRect) {
+        guard hostedContentFrame.map({ NSEqualRects($0, frame) }) != true else { return }
+        hostedContentFrame = frame
+        applyHostedContentFrame(bodyRect: currentBodyRect)
+        needsLayout = true
+    }
+
     override func layout() {
         super.layout()
         guard bounds.width > 0, bounds.height > 0 else { return }
@@ -211,14 +233,17 @@ final class DockBackgroundSurfaceView: NSView {
         let requestedBodyRect = visibleBodyFrame ?? defaultBodyRect
         let intersection = requestedBodyRect.intersection(bounds)
         let bodyRect = intersection.isNull ? .zero : intersection
+        currentBodyRect = bodyRect
         let cornerRadius = DockBackgroundGeometry.cornerRadius(
             forBodyHeight: bodyRect.height
         )
         let boundsChanged = !NSEqualRects(previousBounds, bounds)
         let bodyChanged = !NSEqualRects(previousBodyRect, bodyRect)
-        guard bodyChanged || boundsChanged else { return }
-
         let material = configuration?.material ?? .visualEffect
+        guard bodyChanged || boundsChanged else {
+            applyHostedContentFrame(bodyRect: bodyRect)
+            return
+        }
         let targetRootFrame = DockBackgroundSurfaceLayout.rootFrame(
             material: material,
             bounds: bounds,
@@ -261,6 +286,7 @@ final class DockBackgroundSurfaceView: NSView {
         }
         updateRim(bodyRect: bodyRect, cornerRadius: cornerRadius)
         CATransaction.commit()
+        applyHostedContentFrame(bodyRect: bodyRect)
         previousBounds = bounds
         previousBodyRect = bodyRect
     }
@@ -309,6 +335,7 @@ final class DockBackgroundSurfaceView: NSView {
         guard configuration != resolved else { return }
         configuration = resolved
 
+        detachContentHostFromGlass()
         surfaceRoot?.layer?.mask = nil
         surfaceRoot?.removeFromSuperview()
         surfaceRoot = nil
@@ -344,6 +371,7 @@ final class DockBackgroundSurfaceView: NSView {
             }
         }
 
+        attachContentHost()
         applyVisualProperties()
         needsLayout = true
     }
@@ -393,9 +421,68 @@ final class DockBackgroundSurfaceView: NSView {
         let baseGlass = NSGlassEffectView()
         baseGlass.style = .clear
         baseGlass.tintColor = nil
+        baseGlass.clipsToBounds = false
+        baseGlass.layer?.masksToBounds = false
         surfaceRoot = baseGlass
         baseSurface = baseGlass
         addSubview(baseGlass)
+    }
+
+    private func detachContentHostFromGlass() {
+        if #available(macOS 26.0, *),
+           let glass = baseSurface as? NSGlassEffectView,
+           glass.contentView === contentHost {
+            glass.contentView = nil
+        }
+        contentHost.removeFromSuperview()
+    }
+
+    private func attachContentHost() {
+        guard let configuration, let surfaceRoot else { return }
+        switch configuration.material {
+        case .liquidGlass:
+            if #available(macOS 26.0, *),
+               let glass = baseSurface as? NSGlassEffectView {
+                if glass.contentView !== contentHost {
+                    contentHost.removeFromSuperview()
+                    glass.contentView = contentHost
+                }
+                glass.clipsToBounds = false
+                glass.layer?.masksToBounds = false
+                contentHost.clipsToBounds = false
+                contentHost.superview?.clipsToBounds = false
+                contentHost.superview?.layer?.masksToBounds = false
+            }
+        case .solid, .visualEffect:
+            if contentHost.superview !== self {
+                contentHost.removeFromSuperview()
+                addSubview(contentHost, positioned: .above, relativeTo: surfaceRoot)
+            }
+            if !NSEqualRects(contentHost.frame, bounds) {
+                contentHost.frame = bounds
+            }
+        }
+        applyHostedContentFrame(bodyRect: currentBodyRect)
+    }
+
+    private func applyHostedContentFrame(bodyRect: NSRect) {
+        guard let hostedContentView, let hostedContentFrame else { return }
+        let targetFrame: NSRect
+        if configuration?.material == .liquidGlass {
+            targetFrame = hostedContentFrame.offsetBy(
+                dx: -bodyRect.minX,
+                dy: -bodyRect.minY
+            )
+        } else {
+            if contentHost.superview === self,
+               !NSEqualRects(contentHost.frame, bounds) {
+                contentHost.frame = bounds
+            }
+            targetFrame = hostedContentFrame
+        }
+        if !NSEqualRects(hostedContentView.frame, targetFrame) {
+            hostedContentView.frame = targetFrame
+        }
     }
 
     private func applyGaussianBlur(radius: CGFloat, opacity: CGFloat) {
@@ -442,7 +529,6 @@ final class DockBackgroundSurfaceView: NSView {
 
     private func applyVisualProperties() {
         guard let configuration else { return }
-        let accessibility = currentAccessibilityOptions
         let requestedOpacity = DockBackgroundTransparency.materialOpacity(
             for: transparency
         )
@@ -472,10 +558,10 @@ final class DockBackgroundSurfaceView: NSView {
                 if let glass = baseSurface as? NSGlassEffectView {
                     glass.style = .clear
                     glass.tintColor = nil
-                    glass.alphaValue = DockLiquidGlassPresentation.effectOpacity(
-                        transparency: transparency,
-                        accessibility: accessibility
-                    )
+                    // alphaValue fades the complete composite, including the
+                    // content, refraction, and specular edge. Native glass has
+                    // no public material-opacity control, so keep it intact.
+                    glass.alphaValue = 1
                     glass.isHidden = false
                 }
             }
@@ -484,7 +570,9 @@ final class DockBackgroundSurfaceView: NSView {
         let rimVisibility: CGFloat
         switch configuration.material {
         case .liquidGlass:
-            rimVisibility = 1
+            // Preserve NSGlassEffectView's dynamic refractive edge instead of
+            // covering it with a uniform CALayer border.
+            rimVisibility = 0
         case .solid:
             rimVisibility = 1
         case .visualEffect:
@@ -492,16 +580,9 @@ final class DockBackgroundSurfaceView: NSView {
                 forMaterialOpacity: materialOpacity
             )
         }
-        let baseRimAlpha: CGFloat
-        if configuration.material == .liquidGlass {
-            baseRimAlpha = DockLiquidGlassPresentation.rimOpacity(
-                accessibility: accessibility
-            )
-        } else {
-            baseRimAlpha = configuration.increasesContrast
-                ? 0.62
-                : 0.20 + materialOpacity * 0.34
-        }
+        let baseRimAlpha = configuration.increasesContrast
+            ? 0.62
+            : 0.20 + materialOpacity * 0.34
         rimLayer.isHidden = rimVisibility <= 0.000_1
         rimLayer.borderColor = rimLayer.isHidden
             ? nil

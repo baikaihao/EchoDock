@@ -100,6 +100,8 @@ final class AppearanceSettingsViewController: NSViewController {
         )
         backgroundStyleControl.selectedSegment = preferences.dockBackgroundStyle == .classic ? 0 : 1
         let allowsTransparencyTuning = DockBackgroundTuningPolicy.allowsTransparencyTuning(
+            supportsLiquidGlass: supportsBackgroundStyleSelection,
+            selectedStyle: preferences.dockBackgroundStyle,
             reduceTransparency: NSWorkspace.shared
                 .accessibilityDisplayShouldReduceTransparency
         )

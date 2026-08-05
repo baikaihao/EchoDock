@@ -131,9 +131,17 @@ final class DockContentView: NSView {
         // versions, so assert the overflow policy once more afterward.
         scrollView.clipsToBounds = false
         scrollView.contentView.clipsToBounds = false
-        // Keep icons outside the material view. This lets background
-        // transparency change without fading the app icons with it.
-        addSubview(scrollView, positioned: .above, relativeTo: backgroundView)
+        backgroundView.hostContent(
+            scrollView,
+            interactionRoot: scrollView
+        ) { [weak scrollView, weak stripView] pointInScrollView in
+            guard let scrollView, let stripView else { return nil }
+            let pointInStrip = stripView.convert(
+                pointInScrollView,
+                from: scrollView
+            )
+            return stripView.visuallyHitButton(at: pointInStrip)
+        }
 
         updateBackgroundAppearance()
     }
@@ -326,12 +334,20 @@ final class DockContentView: NSView {
 
     override func layout() {
         super.layout()
+        if !NSEqualRects(backgroundView.frame, bounds) {
+            backgroundView.frame = bounds
+        }
         let activeHeadroom = min(
             maximumActiveHeadroom,
             max(0, bounds.height - dockBodyHeight)
         )
         let stripHeight = max(0, dockBodyHeight - 8 + activeHeadroom)
-        scrollView.frame = NSRect(x: 10, y: 4, width: bounds.width - 20, height: stripHeight)
+        backgroundView.setHostedContentFrame(NSRect(
+            x: 10,
+            y: 4,
+            width: max(0, bounds.width - 20),
+            height: stripHeight
+        ))
         stripView.frame = NSRect(
             x: 0,
             y: 0,
@@ -984,21 +1000,21 @@ final class DockContentView: NSView {
 
     private func updateBackgroundFrame() {
         guard bounds.width > 0 else { return }
+        if !NSEqualRects(backgroundView.frame, bounds) {
+            backgroundView.frame = bounds
+        }
         let backgroundHeight = min(dockBodyHeight, bounds.height)
-        let surfaceFrame = NSRect(
+        let fallbackBodyFrame = NSRect(
             x: bounds.minX,
             y: bounds.minY,
             width: bounds.width,
             height: backgroundHeight
         )
-        if !NSEqualRects(backgroundView.frame, surfaceFrame) {
-            backgroundView.frame = surfaceFrame
-        }
 
         let visualFrame = backgroundInteraction.visualContentFrame
         let targetBodyFrame: NSRect
         guard visualFrame.width > 0 else {
-            targetBodyFrame = surfaceFrame
+            targetBodyFrame = fallbackBodyFrame
             backgroundBodyFrame = targetBodyFrame
             backgroundView.setVisibleBodyFrame(targetBodyFrame)
             return
@@ -1024,8 +1040,8 @@ final class DockContentView: NSView {
     }
 
     private func updateBackgroundAppearance() {
-        // The preference is expressed as transparency, while AppKit exposes
-        // opacity. Only the material is faded; icons remain fully opaque.
+        // Classic mode maps the stored transparency to its material opacity.
+        // Native Liquid Glass stays at full composite strength.
         backgroundView.configure(
             transparency: backgroundTransparency,
             blurStrength: backgroundBlur,
@@ -1117,6 +1133,33 @@ struct DockButtonPresentationGeometry: Equatable {
             visualSlotFrame: visualFrame,
             visualSlotCenterOffsetX: visualFrame.midX - baseFrame.midX
         )
+    }
+}
+
+struct DockVisualButtonHitTarget: Equatable {
+    let buttonIndex: Int
+    let frame: NSRect
+    let zPosition: CGFloat
+}
+
+enum DockVisualButtonHitResolver {
+    static func buttonIndex(
+        at point: NSPoint,
+        targets: [DockVisualButtonHitTarget]
+    ) -> Int? {
+        var bestTarget: DockVisualButtonHitTarget?
+        for target in targets where target.frame.contains(point) {
+            guard let currentBest = bestTarget else {
+                bestTarget = target
+                continue
+            }
+            if target.zPosition > currentBest.zPosition
+                || (target.zPosition == currentBest.zPosition
+                    && target.buttonIndex > currentBest.buttonIndex) {
+                bestTarget = target
+            }
+        }
+        return bestTarget?.buttonIndex
     }
 }
 
@@ -1359,6 +1402,7 @@ private final class DockStripView: NSView {
     private var previousBackgroundInteraction = DockBackgroundInteractionState.idle
 
     private(set) var visibleIconFrames: [NSRect] = []
+    private var visualButtonHitTargets: [DockVisualButtonHitTarget] = []
     private var tooltipHoverFrames: [NSRect] = []
     private var tooltipHoverBounds: NSRect = .zero
     var dockBodyFrame: NSRect?
@@ -1380,6 +1424,23 @@ private final class DockStripView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         onBackgroundContextMenu?(event)
+    }
+
+    func visuallyHitButton(at point: NSPoint) -> DockItemButton? {
+        if let index = DockVisualButtonHitResolver.buttonIndex(
+            at: point,
+            targets: visualButtonHitTargets
+        ),
+           orderedButtons.indices.contains(index) {
+            let button = orderedButtons[index]
+            if button.isEnabled,
+               !button.isHidden,
+               button.alphaValue > 0.000_1,
+               button.superview === self {
+                return button
+            }
+        }
+        return nil
     }
 
     func setFileDragActive(_ active: Bool) {
@@ -1471,6 +1532,7 @@ private final class DockStripView: NSView {
         launchBounceAnimationsEnabled: Bool = false,
         runningIndicatorsEnabled: Bool = true
     ) {
+        visualButtonHitTargets.removeAll(keepingCapacity: true)
         let now = CACurrentMediaTime()
         let previousIdentities = Set(itemButtons.keys)
         let previousStateByIdentity = Dictionary(uniqueKeysWithValues: itemButtons.compactMap {
@@ -2312,6 +2374,7 @@ private final class DockStripView: NSView {
     }
 
     private func removeButtonImmediately(_ identity: ApplicationIdentity) {
+        visualButtonHitTargets.removeAll(keepingCapacity: true)
         itemPresenceTransitions.removeValue(forKey: identity)
         itemPresenceValues.removeValue(forKey: identity)
         removingIdentities.remove(identity)
@@ -2458,6 +2521,7 @@ private final class DockStripView: NSView {
         let horizontalOffset = initialHorizontalOffset
 
         visibleIconFrames.removeAll(keepingCapacity: true)
+        visualButtonHitTargets.removeAll(keepingCapacity: true)
         var tooltipSlotFrames = Array<NSRect?>(
             repeating: nil,
             count: orderedButtons.count
@@ -2495,6 +2559,11 @@ private final class DockStripView: NSView {
                 || orderedButtons[index].item?.kind == .dropPlaceholder
             if !excludesTooltip {
                 visibleIconFrames.append(iconFrame)
+                visualButtonHitTargets.append(DockVisualButtonHitTarget(
+                    buttonIndex: index,
+                    frame: iconFrame,
+                    zPosition: layout.scales[index]
+                ))
                 tooltipSlotFrames[index] = geometry.visualSlotFrame
             }
         }
