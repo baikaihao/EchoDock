@@ -15,6 +15,7 @@ private func windowReservationObserverCallback(
     let notificationName = notification as String
     Task { @MainActor in
         service.receiveAccessibilityNotification(
+            observer: observer,
             element: element,
             name: notificationName
         )
@@ -30,6 +31,9 @@ final class WindowReservationService {
     private static let evaluationDelay: TimeInterval = 0.05
     private static let mutationSuppressionDuration: TimeInterval = 0.8
     private static let startupRefreshDelay: TimeInterval = 1.0
+    private static let workspaceRecoveryDelays: [TimeInterval] = [1.0, 3.0, 6.0]
+    private static let workspaceRecoveryRetryDelay: TimeInterval = 10.0
+    private static let displayRefreshDelay: TimeInterval = 0.25
 
     private let topologyProvider: DisplayTopologyProvider
     private let workspace: NSWorkspace
@@ -51,6 +55,10 @@ final class WindowReservationService {
     private var lifecycleGeneration: UInt64 = 0
     private var evaluationRevision: UInt64 = 0
     private var startupRefreshWorkItem: DispatchWorkItem?
+    private var workspaceRecoveryWorkItems: [DispatchWorkItem] = []
+    private var workspaceRecoveryRevision: UInt64 = 0
+    private var isWorkspaceRecoveryScheduled = false
+    private var displayRefreshWorkItem: DispatchWorkItem?
     private var isStarted = false
 
     convenience init(
@@ -110,6 +118,9 @@ final class WindowReservationService {
         lifecycleGeneration &+= 1
         startupRefreshWorkItem?.cancel()
         startupRefreshWorkItem = nil
+        cancelWorkspaceRecovery()
+        displayRefreshWorkItem?.cancel()
+        displayRefreshWorkItem = nil
         pendingEvaluations.removeAll()
         restoreManagedWindows()
         removeAllAccessibilityObservers()
@@ -172,6 +183,9 @@ final class WindowReservationService {
         pendingEvaluations.removeAll()
 
         guard shouldBeActive else {
+            if isWorkspaceRecoveryScheduled, reservationIsConfigured {
+                return
+            }
             restoreManagedWindows()
             removeUnusedAccessibilityObservers()
             displayGeometries.removeAll()
@@ -180,6 +194,9 @@ final class WindowReservationService {
 
         let previousDisplayGeometries = displayGeometries
         guard !nextDisplayGeometries.isEmpty else {
+            if isWorkspaceRecoveryScheduled {
+                return
+            }
             restoreManagedWindows()
             removeAllAccessibilityObservers()
             displayGeometries.removeAll()
@@ -199,20 +216,25 @@ final class WindowReservationService {
         for processIdentifier in observedApplications.keys
             where !runningProcessIdentifiers.contains(processIdentifier) {
             removeAccessibilityObserver(processIdentifier: processIdentifier)
-            managedWindows.removeAll { $0.processIdentifier == processIdentifier }
+            if !isWorkspaceRecoveryScheduled {
+                managedWindows.removeAll { $0.processIdentifier == processIdentifier }
+            }
         }
         applications.forEach(ensureAccessibilityObserver)
         applications.forEach { refreshWindows(processIdentifier: $0.processIdentifier) }
     }
 
     fileprivate func receiveAccessibilityNotification(
+        observer: AXObserver,
         element: AXUIElement,
         name: String
     ) {
         guard isStarted else { return }
         var processIdentifier: pid_t = 0
         guard AXUIElementGetPid(element, &processIdentifier) == .success,
-              processIdentifier != currentProcessIdentifier else {
+              processIdentifier != currentProcessIdentifier,
+              let currentObservation = observedApplications[processIdentifier],
+              CFEqual(currentObservation.observer, observer) else {
             return
         }
 
@@ -289,7 +311,16 @@ final class WindowReservationService {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.reconcile(refreshAllWindows: true)
+                    self?.scheduleWorkspaceRecovery()
+                }
+            },
+            center.addObserver(
+                forName: NSWorkspace.screensDidWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.scheduleWorkspaceRecovery()
                 }
             },
             center.addObserver(
@@ -298,10 +329,144 @@ final class WindowReservationService {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.reconcile(refreshAllWindows: true)
+                    self?.scheduleWorkspaceRecovery()
+                }
+            },
+            center.addObserver(
+                forName: NSWorkspace.activeSpaceDidChangeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.scheduleDisplayRefresh()
                 }
             }
         ]
+    }
+
+    private func scheduleWorkspaceRecovery() {
+        guard isStarted else { return }
+        cancelWorkspaceRecovery()
+        startupRefreshWorkItem?.cancel()
+        startupRefreshWorkItem = nil
+        displayRefreshWorkItem?.cancel()
+        displayRefreshWorkItem = nil
+
+        workspaceRecoveryRevision &+= 1
+        let revision = workspaceRecoveryRevision
+        isWorkspaceRecoveryScheduled = true
+
+        lifecycleGeneration &+= 1
+        pendingEvaluations.removeAll()
+        mutationSuppressions.removeAll()
+        removeAllAccessibilityObservers()
+
+        for (index, delay) in Self.workspaceRecoveryDelays.enumerated() {
+            let isFinalRefresh = index == Self.workspaceRecoveryDelays.count - 1
+            let workItem = DispatchWorkItem { [weak self] in
+                guard let self,
+                      self.isStarted,
+                      self.workspaceRecoveryRevision == revision else {
+                    return
+                }
+                let recovered = self.rearmAccessibilityObserversAfterWorkspaceResume()
+                if isFinalRefresh {
+                    self.workspaceRecoveryWorkItems.removeAll()
+                    if recovered {
+                        self.isWorkspaceRecoveryScheduled = false
+                    } else {
+                        self.scheduleWorkspaceRecoveryRetry(revision: revision)
+                    }
+                }
+            }
+            workspaceRecoveryWorkItems.append(workItem)
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + delay,
+                execute: workItem
+            )
+        }
+    }
+
+    private func rearmAccessibilityObserversAfterWorkspaceResume() -> Bool {
+        lifecycleGeneration &+= 1
+        pendingEvaluations.removeAll()
+        mutationSuppressions.removeAll()
+        removeAllAccessibilityObservers()
+
+        guard reservationIsConfigured else {
+            reconcile(refreshAllWindows: true)
+            return true
+        }
+        guard permissionService.isGranted,
+              !currentDisplayGeometries().isEmpty else {
+            return false
+        }
+
+        reconcile(refreshAllWindows: true)
+        let applications = workspace.runningApplications.filter(isEligibleApplication)
+        let expectedProcessIdentifiers = Set(applications.map(\.processIdentifier))
+        let observedProcessIdentifiers = Set(observedApplications.keys)
+        return !displayGeometries.isEmpty
+            && expectedProcessIdentifiers.isSubset(of: observedProcessIdentifiers)
+    }
+
+    private func scheduleWorkspaceRecoveryRetry(revision: UInt64) {
+        guard isStarted,
+              isWorkspaceRecoveryScheduled,
+              workspaceRecoveryRevision == revision else {
+            return
+        }
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.isStarted,
+                  self.isWorkspaceRecoveryScheduled,
+                  self.workspaceRecoveryRevision == revision else {
+                return
+            }
+            self.workspaceRecoveryWorkItems.removeAll()
+            if self.rearmAccessibilityObserversAfterWorkspaceResume() {
+                self.isWorkspaceRecoveryScheduled = false
+            } else {
+                self.scheduleWorkspaceRecoveryRetry(revision: revision)
+            }
+        }
+        workspaceRecoveryWorkItems = [workItem]
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.workspaceRecoveryRetryDelay,
+            execute: workItem
+        )
+    }
+
+    private func cancelWorkspaceRecovery() {
+        workspaceRecoveryRevision &+= 1
+        workspaceRecoveryWorkItems.forEach { $0.cancel() }
+        workspaceRecoveryWorkItems.removeAll()
+        isWorkspaceRecoveryScheduled = false
+    }
+
+    private func scheduleDisplayRefresh() {
+        guard isStarted, !isWorkspaceRecoveryScheduled else { return }
+        displayRefreshWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self,
+                  self.isStarted,
+                  !self.isWorkspaceRecoveryScheduled else {
+                return
+            }
+            self.displayRefreshWorkItem = nil
+            if self.reservationShouldBeActive,
+               self.currentDisplayGeometries().isEmpty {
+                self.scheduleWorkspaceRecovery()
+            } else {
+                self.reconcile(refreshAllWindows: true)
+            }
+        }
+        displayRefreshWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.displayRefreshDelay,
+            execute: workItem
+        )
     }
 
     private func observeApplicationState() {
@@ -327,7 +492,7 @@ final class WindowReservationService {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.reconcile(refreshAllWindows: true)
+                    self?.scheduleDisplayRefresh()
                 }
             },
             center.addObserver(
@@ -336,7 +501,7 @@ final class WindowReservationService {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
-                    self?.reconcile(refreshAllWindows: true)
+                    self?.scheduleDisplayRefresh()
                 }
             }
         ]
@@ -397,8 +562,11 @@ final class WindowReservationService {
 
     private func ensureAccessibilityObserver(for application: NSRunningApplication) {
         let processIdentifier = application.processIdentifier
-        guard observedApplications[processIdentifier] == nil,
-              processIdentifier != currentProcessIdentifier else {
+        guard processIdentifier != currentProcessIdentifier else {
+            return
+        }
+        if let observation = observedApplications[processIdentifier] {
+            registerApplicationNotifications(observation)
             return
         }
 
@@ -419,22 +587,32 @@ final class WindowReservationService {
             applicationElement: applicationElement,
             observer: observer
         )
-        observedApplications[processIdentifier] = observation
         CFRunLoopAddSource(
             CFRunLoopGetMain(),
             AXObserverGetRunLoopSource(observer),
             .commonModes
         )
-        addNotification(
+        observedApplications[processIdentifier] = observation
+        registerApplicationNotifications(observation)
+    }
+
+    private func registerApplicationNotifications(
+        _ observation: ObservedApplication
+    ) {
+        [
             kAXWindowCreatedNotification as String,
-            element: applicationElement,
-            observation: observation
-        )
-        addNotification(
-            kAXFocusedWindowChangedNotification as String,
-            element: applicationElement,
-            observation: observation
-        )
+            kAXFocusedWindowChangedNotification as String
+        ].forEach { name in
+            guard !observation.applicationNotifications.contains(name),
+                  addNotification(
+                    name,
+                    element: observation.applicationElement,
+                    observation: observation
+                  ) else {
+                return
+            }
+            observation.applicationNotifications.insert(name)
+        }
     }
 
     private func refreshWindows(processIdentifier: pid_t) {
@@ -457,15 +635,25 @@ final class WindowReservationService {
             return
         }
         _ = AXUIElementSetMessagingTimeout(window, Self.messagingTimeout)
+        let observesMovement = addNotification(
+            kAXMovedNotification as String,
+            element: window,
+            observation: observation
+        )
+        let observesResize = addNotification(
+            kAXResizedNotification as String,
+            element: window,
+            observation: observation
+        )
+        guard observesMovement && observesResize else { return }
+
         observation.windows.append(window)
         [
-            kAXMovedNotification as String,
-            kAXResizedNotification as String,
             kAXWindowMiniaturizedNotification as String,
             kAXWindowDeminiaturizedNotification as String,
             kAXUIElementDestroyedNotification as String
         ].forEach {
-            addNotification($0, element: window, observation: observation)
+            _ = addNotification($0, element: window, observation: observation)
         }
     }
 
@@ -473,7 +661,7 @@ final class WindowReservationService {
         _ name: String,
         element: AXUIElement,
         observation: ObservedApplication
-    ) {
+    ) -> Bool {
         let refcon = Unmanaged.passUnretained(self).toOpaque()
         let error = AXObserverAddNotification(
             observation.observer,
@@ -481,9 +669,7 @@ final class WindowReservationService {
             name as CFString,
             refcon
         )
-        if error != .success, error != .notificationAlreadyRegistered {
-            return
-        }
+        return error == .success || error == .notificationAlreadyRegistered
     }
 
     private func removeAccessibilityObserver(processIdentifier: pid_t) {
@@ -624,6 +810,9 @@ final class WindowReservationService {
         var retained: [ManagedWindow] = []
         for managed in managedWindows {
             guard let currentFrame = accessibilityFrame(of: managed.element) else {
+                if isWorkspaceRecoveryScheduled {
+                    retained.append(managed)
+                }
                 continue
             }
             guard WindowReservationGeometryPolicy.framesApproximatelyEqual(
@@ -1002,6 +1191,7 @@ private final class ObservedApplication {
     let processIdentifier: pid_t
     let applicationElement: AXUIElement
     let observer: AXObserver
+    var applicationNotifications: Set<String> = []
     var windows: [AXUIElement] = []
 
     init(

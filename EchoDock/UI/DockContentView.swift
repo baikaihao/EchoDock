@@ -55,6 +55,7 @@ final class DockContentView: NSView {
     private var isMagnificationHeadroomActive = false
     private var isLaunchBounceActive = false
     private var backgroundInteraction = DockBackgroundInteractionState.idle
+    private var backgroundBodyFrame: NSRect = .zero
     private var snapshot: DockSnapshot = .empty
     private var dropDestination: DockDropDestination?
     private var dropPlaceholderShortcutIndex: Int?
@@ -396,12 +397,7 @@ final class DockContentView: NSView {
         guard let window, window.isVisible else { return false }
         let pointInWindow = window.convertPoint(fromScreen: screenLocation)
         let pointInContent = convert(pointInWindow, from: nil)
-        let bodyFrame = NSRect(
-            x: backgroundView.frame.minX,
-            y: backgroundView.frame.minY,
-            width: backgroundView.frame.width,
-            height: min(dockBodyHeight, backgroundView.frame.height)
-        )
+        let bodyFrame = backgroundBodyFrame
         let iconFrames = stripView.visibleIconFrames.map {
             stripView.convert($0, to: self)
         }
@@ -989,16 +985,22 @@ final class DockContentView: NSView {
     private func updateBackgroundFrame() {
         guard bounds.width > 0 else { return }
         let backgroundHeight = min(dockBodyHeight, bounds.height)
+        let surfaceFrame = NSRect(
+            x: bounds.minX,
+            y: bounds.minY,
+            width: bounds.width,
+            height: backgroundHeight
+        )
+        if !NSEqualRects(backgroundView.frame, surfaceFrame) {
+            backgroundView.frame = surfaceFrame
+        }
+
         let visualFrame = backgroundInteraction.visualContentFrame
+        let targetBodyFrame: NSRect
         guard visualFrame.width > 0 else {
-            let targetFrame = NSRect(
-                x: 0,
-                y: 0,
-                width: bounds.width,
-                height: backgroundHeight
-            )
-            guard !NSEqualRects(backgroundView.frame, targetFrame) else { return }
-            backgroundView.frame = targetFrame
+            targetBodyFrame = surfaceFrame
+            backgroundBodyFrame = targetBodyFrame
+            backgroundView.setVisibleBodyFrame(targetBodyFrame)
             return
         }
 
@@ -1013,13 +1015,12 @@ final class DockContentView: NSView {
         let scale = window?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
             ?? 2
-        let targetFrame = DockBackgroundFrameAlignment.pixelAligned(
+        targetBodyFrame = DockBackgroundFrameAlignment.pixelAligned(
             NSRect(x: originX, y: 0, width: width, height: backgroundHeight),
             backingScaleFactor: scale
         )
-
-        guard !NSEqualRects(backgroundView.frame, targetFrame) else { return }
-        backgroundView.frame = targetFrame
+        backgroundBodyFrame = targetBodyFrame
+        backgroundView.setVisibleBodyFrame(targetBodyFrame)
     }
 
     private func updateBackgroundAppearance() {
@@ -1137,8 +1138,8 @@ struct DockMagnificationRenderPlan: Equatable {
         switch request {
         case .pointerChanged:
             return DockMagnificationRenderPlan(
-                rendersImmediately: true,
-                shouldRunFrameClock: !isTransitionSettled
+                rendersImmediately: false,
+                shouldRunFrameClock: true
             )
         case .transitionTargetChanged:
             return DockMagnificationRenderPlan(
@@ -1283,6 +1284,7 @@ private final class DockStripView: NSView {
     private var fallbackFrameTimer: Timer?
     private var previousAnimationTime: CFTimeInterval?
     private var isFrameClockRunning = false
+    private var hasPendingPointerRender = false
     private var pointerSampleSequence = DockPointerSampleSequence()
     private var itemPresenceTransitions: [ApplicationIdentity: DockItemPresenceTransition] = [:]
     private var itemPresenceValues: [ApplicationIdentity: CGFloat] = [:]
@@ -1343,6 +1345,7 @@ private final class DockStripView: NSView {
         pointerPoint = nil
         clearHoveredButton()
         magnificationTransition.snap(to: 0)
+        hasPendingPointerRender = false
         if !hasActivePresentationAnimation {
             stopMagnificationFrameClock()
         }
@@ -1904,6 +1907,7 @@ private final class DockStripView: NSView {
             onPointerInteractionChange?(false)
         }
         stopMagnificationFrameClock()
+        hasPendingPointerRender = false
         finishPresenceAnimations(notifyWidthChange: true)
         finishLaunchBounceAnimations()
         pointerSampleSequence.discardSamples(
@@ -1951,6 +1955,9 @@ private final class DockStripView: NSView {
     }
 
     private func requestMagnificationRender(_ request: DockMagnificationRenderRequest) {
+        if case .pointerChanged = request {
+            hasPendingPointerRender = true
+        }
         let plan = DockMagnificationRenderPlan.make(
             request: request,
             isTransitionSettled: magnificationTransition.isSettled
@@ -2015,7 +2022,9 @@ private final class DockStripView: NSView {
     fileprivate func advanceMagnificationFrame() {
         let hasMagnificationAnimation = !magnificationTransition.isSettled
         let hasPresentationAnimation = hasActivePresentationAnimation
-        guard hasMagnificationAnimation || hasPresentationAnimation else {
+        guard hasMagnificationAnimation
+                || hasPresentationAnimation
+                || hasPendingPointerRender else {
             stopMagnificationFrameClock()
             return
         }
@@ -2032,6 +2041,7 @@ private final class DockStripView: NSView {
         if !launchBounceTransitions.isEmpty {
             advanceLaunchBounceAnimations(to: now)
         }
+        hasPendingPointerRender = false
         renderMagnification()
         updateMagnificationHeadroomActivity()
         updateLaunchBounceActivity()
@@ -2043,7 +2053,8 @@ private final class DockStripView: NSView {
             pointerX = nil
         }
         if magnificationTransition.isSettled,
-           !hasActivePresentationAnimation {
+           !hasActivePresentationAnimation,
+           !hasPendingPointerRender {
             stopMagnificationFrameClock()
         }
     }

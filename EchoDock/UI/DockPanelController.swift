@@ -298,6 +298,7 @@ final class DockPanelController {
         dragReceiverPanel.level = NSWindow.Level(
             rawValue: NSWindow.Level.statusBar.rawValue + 1
         )
+        dragReceiverPanel.ignoresMouseEvents = true
         dragReceiverPanel.onDraggingEntered = { [weak self] sender in
             self?.contentView.draggingEntered(sender) ?? []
         }
@@ -399,7 +400,7 @@ final class DockPanelController {
     ) {
         guard presentationMode != .suppressed else { return }
         updateFileDragCaptureRequest(
-            preferences.isEnabled && pressedButtons != 0
+            preferences.isEnabled && isFileDrag && pressedButtons != 0
         )
         guard preferences.isEnabled else {
             hide(animated: false)
@@ -533,6 +534,7 @@ final class DockPanelController {
         dragReceiverPanel.onConcludeDragOperation = nil
         dragReceiverPanel.onDraggingEnded = nil
         dragReceiverPanel.contentView = nil
+        dragReceiverPanel.ignoresMouseEvents = true
     }
 
     private func applyLayout(
@@ -678,6 +680,7 @@ final class DockPanelController {
         isContextMenuPresented = false
         tooltipPanelController.hide()
         dragReceiverPanel.orderOut(nil)
+        dragReceiverPanel.ignoresMouseEvents = true
         panel.orderOut(nil)
         contentView.alphaValue = 1
         contentView.frame.origin = .zero
@@ -734,6 +737,7 @@ final class DockPanelController {
 
         isFileDragCaptureActive = true
         dragReceiverPanel.setFrame(fileDragReceiverFrame, display: false)
+        dragReceiverPanel.ignoresMouseEvents = false
         dragReceiverPanel.orderFrontRegardless()
     }
 
@@ -749,6 +753,7 @@ final class DockPanelController {
                   !self.isFileDragDestinationActive else { return }
 
             self.isFileDragCaptureActive = false
+            self.dragReceiverPanel.ignoresMouseEvents = true
             self.dragReceiverPanel.orderOut(nil)
         }
     }

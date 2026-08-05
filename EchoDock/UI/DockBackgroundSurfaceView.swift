@@ -119,6 +119,7 @@ final class DockBackgroundSurfaceView: NSView {
     private var blurStrength: CGFloat = DockBackgroundBlur.defaultValue
     private var bodyHeight: CGFloat = 72
     private var selectedStyle: DockBackgroundStyle = .liquidGlass
+    private var visibleBodyFrame: NSRect?
     private var previousBounds: NSRect = .null
     private var previousBodyRect: NSRect = .null
 
@@ -174,16 +175,25 @@ final class DockBackgroundSurfaceView: NSView {
         needsLayout = true
     }
 
+    func setVisibleBodyFrame(_ frame: NSRect) {
+        guard visibleBodyFrame.map({ NSEqualRects($0, frame) }) != true else { return }
+        visibleBodyFrame = frame
+        needsLayout = true
+    }
+
     override func layout() {
         super.layout()
         guard bounds.width > 0, bounds.height > 0 else { return }
 
-        let bodyRect = NSRect(
+        let defaultBodyRect = NSRect(
             x: bounds.minX,
             y: bounds.minY,
             width: bounds.width,
             height: min(bodyHeight, bounds.height)
         )
+        let requestedBodyRect = visibleBodyFrame ?? defaultBodyRect
+        let intersection = requestedBodyRect.intersection(bounds)
+        let bodyRect = intersection.isNull ? .zero : intersection
         let cornerRadius = DockBackgroundGeometry.cornerRadius(
             forBodyHeight: bodyRect.height
         )
@@ -194,11 +204,13 @@ final class DockBackgroundSurfaceView: NSView {
         case .liquidGlass:
             if boundsChanged {
                 surfaceRoot?.frame = bounds
+                gaussianBackdropSurface?.frame = bounds
             }
-            if bodyChanged {
-                gaussianBackdropSurface?.frame = bodyRect
-                gaussianBackdropSurface?.layer?.cornerRadius = cornerRadius
-                gaussianBackdropSurface?.layer?.cornerCurve = .continuous
+            if bodyChanged || boundsChanged {
+                gaussianBackdropSurface?.setVisibleBodyFrame(
+                    bodyRect,
+                    cornerRadius: cornerRadius
+                )
                 baseSurface?.frame = bodyRect
                 opaqueBackingSurface?.frame = bodyRect
                 opaqueBackingSurface?.layer?.cornerRadius = cornerRadius
@@ -210,17 +222,24 @@ final class DockBackgroundSurfaceView: NSView {
             }
 
         case .visualEffect:
-            if bodyChanged {
+            if let gaussianBackdropSurface {
+                if boundsChanged {
+                    surfaceRoot?.frame = bounds
+                    gaussianBackdropSurface.frame = bounds
+                }
+                if bodyChanged || boundsChanged {
+                    gaussianBackdropSurface.setVisibleBodyFrame(
+                        bodyRect,
+                        cornerRadius: cornerRadius
+                    )
+                    baseSurface?.frame = bodyRect
+                    baseSurface?.layer?.cornerRadius = cornerRadius
+                    baseSurface?.layer?.cornerCurve = .continuous
+                }
+            } else if bodyChanged {
                 surfaceRoot?.frame = bodyRect
                 surfaceRoot?.layer?.cornerRadius = cornerRadius
                 surfaceRoot?.layer?.cornerCurve = .continuous
-                let localBodyRect = NSRect(origin: .zero, size: bodyRect.size)
-                gaussianBackdropSurface?.frame = localBodyRect
-                gaussianBackdropSurface?.layer?.cornerRadius = cornerRadius
-                gaussianBackdropSurface?.layer?.cornerCurve = .continuous
-                baseSurface?.frame = localBodyRect
-                baseSurface?.layer?.cornerRadius = cornerRadius
-                baseSurface?.layer?.cornerCurve = .continuous
             }
 
         case .solid:
@@ -565,6 +584,8 @@ private enum DockGaussianBackdropRuntime {
 }
 
 private final class DockGaussianBackdropView: NSView {
+    private let visibilityMaskLayer = CAShapeLayer()
+
     override func makeBackingLayer() -> CALayer {
         DockGaussianBackdropRuntime.makeBehindWindowLayer()
             ?? super.makeBackingLayer()
@@ -575,5 +596,29 @@ private final class DockGaussianBackdropView: NSView {
             return nil
         }
         return layer
+    }
+
+    func setVisibleBodyFrame(_ frame: NSRect, cornerRadius: CGFloat) {
+        guard let layer else { return }
+        let scale = window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+        let path = CGPath(
+            roundedRect: frame,
+            cornerWidth: cornerRadius,
+            cornerHeight: cornerRadius,
+            transform: nil
+        )
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        visibilityMaskLayer.frame = bounds
+        visibilityMaskLayer.contentsScale = scale
+        visibilityMaskLayer.fillColor = NSColor.black.cgColor
+        visibilityMaskLayer.path = path
+        if layer.mask !== visibilityMaskLayer {
+            layer.mask = visibilityMaskLayer
+        }
+        CATransaction.commit()
     }
 }

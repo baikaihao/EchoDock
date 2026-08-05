@@ -70,8 +70,12 @@ final class MouseEdgeMonitor: NSObject {
     }
 
     private var isFileDragInProgress: Bool {
-        guard NSEvent.pressedMouseButtons != 0 else { return false }
         let pasteboard = NSPasteboard(name: .drag)
+        guard NSEvent.pressedMouseButtons != 0 else {
+            dragPasteboardChangeCount = pasteboard.changeCount
+            dragPasteboardContainsFiles = false
+            return false
+        }
         if pasteboard.changeCount != dragPasteboardChangeCount {
             dragPasteboardChangeCount = pasteboard.changeCount
             dragPasteboardContainsFiles = pasteboard.canReadObject(
