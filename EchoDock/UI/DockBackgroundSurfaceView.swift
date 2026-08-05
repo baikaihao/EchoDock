@@ -107,7 +107,8 @@ final class DockBackgroundSurfaceView: NSView {
     private static let gaussianBlurRadiusKeyPath =
         "filters.\(gaussianBlurFilterName).inputRadius"
 
-    private let rimLayer = CAShapeLayer()
+    private let rimLayer = CALayer()
+    private let surfaceVisibilityMaskLayer = CALayer()
     private var surfaceRoot: NSView?
     private var baseSurface: NSView?
     private var gaussianBackdropSurface: DockGaussianBackdropView?
@@ -134,10 +135,14 @@ final class DockBackgroundSurfaceView: NSView {
         layer?.shadowOffset = .zero
         layer?.shadowPath = nil
 
-        rimLayer.fillColor = nil
-        rimLayer.lineWidth = 0.7
+        rimLayer.backgroundColor = nil
+        rimLayer.borderWidth = 0.7
+        rimLayer.cornerCurve = .continuous
         rimLayer.zPosition = 10
         layer?.addSublayer(rimLayer)
+
+        surfaceVisibilityMaskLayer.backgroundColor = NSColor.black.cgColor
+        surfaceVisibilityMaskLayer.cornerCurve = .continuous
 
         rebuildSurfaceIfNeeded()
         NSWorkspace.shared.notificationCenter.addObserver(
@@ -199,74 +204,40 @@ final class DockBackgroundSurfaceView: NSView {
         )
         let boundsChanged = !NSEqualRects(previousBounds, bounds)
         let bodyChanged = !NSEqualRects(previousBodyRect, bodyRect)
+        guard bodyChanged || boundsChanged else { return }
 
-        switch configuration?.material {
-        case .liquidGlass:
-            if boundsChanged {
-                surfaceRoot?.frame = bounds
-                gaussianBackdropSurface?.frame = bounds
+        if boundsChanged {
+            surfaceRoot?.frame = bounds
+            let surfaceBounds = surfaceRoot?.bounds
+                ?? NSRect(origin: .zero, size: bounds.size)
+            if let baseSurface, baseSurface !== surfaceRoot {
+                baseSurface.frame = surfaceBounds
             }
-            if bodyChanged || boundsChanged {
-                gaussianBackdropSurface?.setVisibleBodyFrame(
-                    bodyRect,
-                    cornerRadius: cornerRadius
-                )
-                baseSurface?.frame = bodyRect
-                opaqueBackingSurface?.frame = bodyRect
-                opaqueBackingSurface?.layer?.cornerRadius = cornerRadius
-                opaqueBackingSurface?.layer?.cornerCurve = .continuous
-                if #available(macOS 26.0, *),
-                   let baseGlass = baseSurface as? NSGlassEffectView {
-                    baseGlass.cornerRadius = cornerRadius
-                }
-            }
-
-        case .visualEffect:
-            if let gaussianBackdropSurface {
-                if boundsChanged {
-                    surfaceRoot?.frame = bounds
-                    gaussianBackdropSurface.frame = bounds
-                }
-                if bodyChanged || boundsChanged {
-                    gaussianBackdropSurface.setVisibleBodyFrame(
-                        bodyRect,
-                        cornerRadius: cornerRadius
-                    )
-                    baseSurface?.frame = bodyRect
-                    baseSurface?.layer?.cornerRadius = cornerRadius
-                    baseSurface?.layer?.cornerCurve = .continuous
-                }
-            } else if bodyChanged {
-                surfaceRoot?.frame = bodyRect
-                surfaceRoot?.layer?.cornerRadius = cornerRadius
-                surfaceRoot?.layer?.cornerCurve = .continuous
-            }
-
-        case .solid:
-            if bodyChanged {
-                surfaceRoot?.frame = bodyRect
-                surfaceRoot?.layer?.cornerRadius = cornerRadius
-                surfaceRoot?.layer?.cornerCurve = .continuous
-            }
-
-        case nil:
-            break
+            gaussianBackdropSurface?.frame = surfaceBounds
+            opaqueBackingSurface?.frame = surfaceBounds
         }
 
-        if bodyChanged || boundsChanged {
-            let rimRect = bodyRect.insetBy(dx: 0.35, dy: 0.35)
-            let rimPath = CGPath(
-                roundedRect: rimRect,
-                cornerWidth: max(0, cornerRadius - 0.35),
-                cornerHeight: max(0, cornerRadius - 0.35),
-                transform: nil
-            )
-            rimLayer.frame = bounds
-            rimLayer.contentsScale = window?.backingScaleFactor
-                ?? NSScreen.main?.backingScaleFactor
-                ?? 2
-            rimLayer.path = rimPath
+        let radiusChanged = previousBodyRect.isNull
+            || abs(previousBodyRect.height - bodyRect.height) > 0.000_1
+        if radiusChanged || boundsChanged {
+            baseSurface?.layer?.cornerRadius = cornerRadius
+            baseSurface?.layer?.cornerCurve = .continuous
+            opaqueBackingSurface?.layer?.cornerRadius = cornerRadius
+            opaqueBackingSurface?.layer?.cornerCurve = .continuous
+            if #available(macOS 26.0, *),
+               let baseGlass = baseSurface as? NSGlassEffectView {
+                baseGlass.cornerRadius = cornerRadius
+            }
         }
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        updateSurfaceVisibilityMask(
+            bodyRect: bodyRect,
+            cornerRadius: cornerRadius
+        )
+        updateRim(bodyRect: bodyRect, cornerRadius: cornerRadius)
+        CATransaction.commit()
         previousBounds = bounds
         previousBodyRect = bodyRect
     }
@@ -315,6 +286,7 @@ final class DockBackgroundSurfaceView: NSView {
         guard configuration != resolved else { return }
         configuration = resolved
 
+        surfaceRoot?.layer?.mask = nil
         surfaceRoot?.removeFromSuperview()
         surfaceRoot = nil
         baseSurface = nil
@@ -532,9 +504,37 @@ final class DockBackgroundSurfaceView: NSView {
         let baseRimAlpha = configuration.increasesContrast
             ? 0.62
             : 0.20 + materialOpacity * 0.34
-        rimLayer.strokeColor = NSColor.white.withAlphaComponent(
+        rimLayer.borderColor = NSColor.white.withAlphaComponent(
             baseRimAlpha * rimVisibility
         ).cgColor
+    }
+
+    private func updateSurfaceVisibilityMask(
+        bodyRect: NSRect,
+        cornerRadius: CGFloat
+    ) {
+        guard let surfaceRoot, let rootLayer = surfaceRoot.layer else { return }
+        let localBodyRect = convert(bodyRect, to: surfaceRoot)
+        let scale = window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+
+        surfaceVisibilityMaskLayer.frame = localBodyRect
+        surfaceVisibilityMaskLayer.cornerRadius = cornerRadius
+        surfaceVisibilityMaskLayer.contentsScale = scale
+        if rootLayer.mask !== surfaceVisibilityMaskLayer {
+            rootLayer.mask = surfaceVisibilityMaskLayer
+        }
+    }
+
+    private func updateRim(bodyRect: NSRect, cornerRadius: CGFloat) {
+        let scale = window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+
+        rimLayer.frame = bodyRect
+        rimLayer.cornerRadius = cornerRadius
+        rimLayer.contentsScale = scale
     }
 }
 
@@ -584,8 +584,6 @@ private enum DockGaussianBackdropRuntime {
 }
 
 private final class DockGaussianBackdropView: NSView {
-    private let visibilityMaskLayer = CAShapeLayer()
-
     override func makeBackingLayer() -> CALayer {
         DockGaussianBackdropRuntime.makeBehindWindowLayer()
             ?? super.makeBackingLayer()
@@ -596,29 +594,5 @@ private final class DockGaussianBackdropView: NSView {
             return nil
         }
         return layer
-    }
-
-    func setVisibleBodyFrame(_ frame: NSRect, cornerRadius: CGFloat) {
-        guard let layer else { return }
-        let scale = window?.backingScaleFactor
-            ?? NSScreen.main?.backingScaleFactor
-            ?? 2
-        let path = CGPath(
-            roundedRect: frame,
-            cornerWidth: cornerRadius,
-            cornerHeight: cornerRadius,
-            transform: nil
-        )
-
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        visibilityMaskLayer.frame = bounds
-        visibilityMaskLayer.contentsScale = scale
-        visibilityMaskLayer.fillColor = NSColor.black.cgColor
-        visibilityMaskLayer.path = path
-        if layer.mask !== visibilityMaskLayer {
-            layer.mask = visibilityMaskLayer
-        }
-        CATransaction.commit()
     }
 }

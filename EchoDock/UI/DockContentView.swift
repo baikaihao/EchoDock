@@ -1103,6 +1103,23 @@ struct DockHoverResolver {
     }
 }
 
+struct DockButtonPresentationGeometry: Equatable {
+    let viewFrame: NSRect
+    let visualSlotFrame: NSRect
+    let visualSlotCenterOffsetX: CGFloat
+
+    static func make(
+        baseFrame: NSRect,
+        visualFrame: NSRect
+    ) -> DockButtonPresentationGeometry {
+        DockButtonPresentationGeometry(
+            viewFrame: baseFrame,
+            visualSlotFrame: visualFrame,
+            visualSlotCenterOffsetX: visualFrame.midX - baseFrame.midX
+        )
+    }
+}
+
 struct DockMagnificationHeadroomPolicy {
     static func isActive(
         magnificationEnabled: Bool,
@@ -1692,10 +1709,11 @@ private final class DockStripView: NSView {
         // Hover hysteresis may grow to the right, but never left into the
         // shortcut insertion slot.
         let trashIconFrame = trashButton.iconFrame(in: self)
+        let trashSlotFrame = trashButton.visualSlotFrame(in: self)
         let trashRightPadding: CGFloat = preservesTrashTarget ? 8 : 4
-        let trashEntryMaxX = max(trashIconFrame.maxX, trashButton.frame.maxX)
+        let trashEntryMaxX = max(trashIconFrame.maxX, trashSlotFrame.maxX)
             + trashRightPadding
-        let trashEntryMinX = trashButton.frame.minX
+        let trashEntryMinX = trashSlotFrame.minX
         if point.x >= trashEntryMinX, point.x <= trashEntryMaxX {
             return .trash
         }
@@ -1710,10 +1728,10 @@ private final class DockStripView: NSView {
         let shortcutTargetWidth = preservesShortcutTarget
             ? slotWidth * 1.5 + 4
             : slotWidth
-        let bootstrapStart = trashButton.frame.minX - shortcutTargetWidth
+        let bootstrapStart = trashSlotFrame.minX - shortcutTargetWidth
         let fileSectionHysteresis = preservesShortcutTarget ? slotWidth / 2 + 4 : 0
         let existingFileSectionStart = fileButtons
-            .map(\.frame.minX)
+            .map { $0.visualSlotFrame(in: self).minX }
             .min()
             .map {
                 $0
@@ -1726,7 +1744,8 @@ private final class DockStripView: NSView {
                 // During insertion the placeholder grows from zero width. Use
                 // its projected full-width edge so a visible slot remains a
                 // valid final drop target throughout the animation.
-                button.frame.minX - max(0, slotWidth - button.frame.width) / 2
+                let visualFrame = button.visualSlotFrame(in: self)
+                return visualFrame.minX - max(0, slotWidth - visualFrame.width) / 2
             }
         let fileSectionStart = min(
             bootstrapStart,
@@ -1734,12 +1753,12 @@ private final class DockStripView: NSView {
             placeholderSectionStart ?? bootstrapStart
         )
         guard point.x >= fileSectionStart,
-              point.x < trashButton.frame.minX else {
+              point.x < trashSlotFrame.minX else {
             return nil
         }
 
         let insertionIndex = fileButtons.firstIndex { button in
-            point.x < button.frame.midX
+            point.x < button.visualSlotFrame(in: self).midX
         } ?? fileButtons.count
         return .shortcuts(index: insertionIndex)
     }
@@ -2343,6 +2362,17 @@ private final class DockStripView: NSView {
     }
 
     private func renderMagnification() {
+        let ownsLayerTransaction = !CATransaction.disableActions()
+        if ownsLayerTransaction {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+        }
+        defer {
+            if ownsLayerTransaction {
+                CATransaction.commit()
+            }
+        }
+
         let presenceValues = orderedButtons.map { button in
             button.item.flatMap { itemPresenceValues[$0.identity] } ?? 1
         }
@@ -2391,25 +2421,38 @@ private final class DockStripView: NSView {
         )
         for index in orderedButtons.indices {
             let button = orderedButtons[index]
-            let targetFrame = layout.buttonFrames[index].offsetBy(
+            let baseFrame = layout.baseButtonFrames[index].offsetBy(
                 dx: horizontalOffset,
                 dy: 0
             )
-            if !NSEqualRects(button.frame, targetFrame) {
-                button.frame = targetFrame
+            let visualFrame = layout.buttonFrames[index].offsetBy(
+                dx: horizontalOffset,
+                dy: 0
+            )
+            let geometry = DockButtonPresentationGeometry.make(
+                baseFrame: baseFrame,
+                visualFrame: visualFrame
+            )
+            // AppKit owns a stable, non-magnified control frame. Only the
+            // button's private layers follow the live visual slot, avoiding a
+            // layout pass for every icon on every display-link callback.
+            if !NSEqualRects(button.frame, geometry.viewFrame) {
+                button.frame = geometry.viewFrame
             }
             let identity = button.item?.identity
             button.setPresentation(
                 magnification: layout.scales[index],
                 presenceProgress: presenceValues[index],
-                launchBounceOffset: identity.flatMap { launchBounceOffsets[$0] } ?? 0
+                launchBounceOffset: identity.flatMap { launchBounceOffsets[$0] } ?? 0,
+                visualSlotCenterOffsetX: geometry.visualSlotCenterOffsetX,
+                visualSlotWidth: geometry.visualSlotFrame.width
             )
             let iconFrame = button.iconFrame(in: self)
             let excludesTooltip = identity.map(removingIdentities.contains) ?? false
                 || orderedButtons[index].item?.kind == .dropPlaceholder
             if !excludesTooltip {
                 visibleIconFrames.append(iconFrame)
-                tooltipSlotFrames[index] = targetFrame
+                tooltipSlotFrames[index] = geometry.visualSlotFrame
             }
         }
         let verticalHoverBounds = dockBodyFrame.map { bounds.union($0) } ?? bounds

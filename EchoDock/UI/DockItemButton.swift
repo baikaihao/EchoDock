@@ -87,14 +87,17 @@ final class DockItemButton: NSButton, NSDraggingSource {
     }
 
     private let iconLayer = CALayer()
-    private let runningIndicator = NSView()
-    private let failureImageView = NSImageView()
+    private let runningIndicatorLayer = CALayer()
+    private let failureIndicatorLayer = CALayer()
+    private let failureIndicatorMaskLayer = CALayer()
     private(set) var item: DockItem?
     private var iconImage: NSImage?
     private var iconSize: CGFloat = 48
     private var magnification: CGFloat = 1
     private var presenceProgress: CGFloat = 1
     private var launchBounceOffset: CGFloat = 0
+    private var visualSlotCenterOffsetX: CGFloat = 0
+    private var visualSlotWidth: CGFloat?
     private var activeContextMenu: NSMenu?
     private var isContextMenuPresented = false
     private var isTrackingFileDrag = false
@@ -111,6 +114,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
         focusRingType = .none
         wantsLayer = true
         layer?.cornerRadius = 8
+        layer?.masksToBounds = false
         target = self
         action = #selector(didPress)
 
@@ -119,19 +123,19 @@ final class DockItemButton: NSButton, NSDraggingSource {
         iconLayer.minificationFilter = .trilinear
         layer?.addSublayer(iconLayer)
 
-        runningIndicator.wantsLayer = true
-        runningIndicator.layer?.backgroundColor = NSColor.secondaryLabelColor.cgColor
-        runningIndicator.layer?.cornerRadius = 2
-        addSubview(runningIndicator)
+        runningIndicatorLayer.backgroundColor = NSColor.secondaryLabelColor.cgColor
+        runningIndicatorLayer.cornerRadius = 2
+        layer?.addSublayer(runningIndicatorLayer)
 
-        failureImageView.image = NSImage(
+        failureIndicatorLayer.backgroundColor = NSColor.systemRed.cgColor
+        failureIndicatorLayer.mask = failureIndicatorMaskLayer
+        failureIndicatorMaskLayer.contentsGravity = .resizeAspect
+        failureIndicatorMaskLayer.contents = Self.cgImage(from: NSImage(
             systemSymbolName: "exclamationmark.circle.fill",
             accessibilityDescription: L10n.text("dock.action.failed")
-        )
-        failureImageView.contentTintColor = NSColor.systemRed
-        failureImageView.imageScaling = .scaleProportionallyUpOrDown
-        failureImageView.isHidden = true
-        addSubview(failureImageView)
+        ))
+        failureIndicatorLayer.isHidden = true
+        layer?.addSublayer(failureIndicatorLayer)
     }
 
     required init?(coder: NSCoder) {
@@ -145,8 +149,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
 
     override func layout() {
         super.layout()
-        updateIconLayer()
-        updateAccessoryFrames()
+        updatePresentationLayers()
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -231,25 +234,25 @@ final class DockItemButton: NSButton, NSDraggingSource {
         // default tooltip, which can truncate names to "Xco…".
         toolTip = nil
         setAccessibilityLabel(item.displayName)
-        runningIndicator.isHidden = !DockRunningIndicatorPresentationPolicy.isVisible(
+        runningIndicatorLayer.isHidden = !DockRunningIndicatorPresentationPolicy.isVisible(
             isRunning: item.isRunning,
             isEnabled: showsRunningIndicator
         )
 
         switch item.transientState {
         case .normal:
-            failureImageView.isHidden = true
+            failureIndicatorLayer.isHidden = true
         case .launching:
-            failureImageView.isHidden = true
+            failureIndicatorLayer.isHidden = true
         case .failed:
-            failureImageView.isHidden = false
+            failureIndicatorLayer.isHidden = false
         }
         if case let .fileShortcut(_, _, isAvailable) = item.kind, !isAvailable {
-            failureImageView.isHidden = false
+            failureIndicatorLayer.isHidden = false
         }
         if item.kind == .dropPlaceholder {
-            runningIndicator.isHidden = true
-            failureImageView.isHidden = true
+            runningIndicatorLayer.isHidden = true
+            failureIndicatorLayer.isHidden = true
         }
         setDropTargeted(false)
         needsLayout = true
@@ -324,27 +327,39 @@ final class DockItemButton: NSButton, NSDraggingSource {
         setPresentation(
             magnification: value,
             presenceProgress: presenceProgress,
-            launchBounceOffset: launchBounceOffset
+            launchBounceOffset: launchBounceOffset,
+            visualSlotCenterOffsetX: visualSlotCenterOffsetX,
+            visualSlotWidth: visualSlotWidth
         )
     }
 
     func setPresentation(
         magnification value: CGFloat,
         presenceProgress progress: CGFloat,
-        launchBounceOffset bounceOffset: CGFloat = 0
+        launchBounceOffset bounceOffset: CGFloat = 0,
+        visualSlotCenterOffsetX centerOffsetX: CGFloat = 0,
+        visualSlotWidth slotWidth: CGFloat? = nil
     ) {
         let clampedMagnification = min(1.80, max(1, value))
         let clampedProgress = min(1, max(0, progress))
         let clampedBounceOffset = max(0, bounceOffset)
+        let clampedSlotWidth = slotWidth.map { max(0, $0) }
         let magnificationChanged = abs(clampedMagnification - magnification) > 0.0001
         let presenceChanged = abs(clampedProgress - presenceProgress) > 0.0001
         let bounceChanged = abs(clampedBounceOffset - launchBounceOffset) > 0.0001
+        let centerOffsetChanged = abs(centerOffsetX - visualSlotCenterOffsetX) > 0.0001
+        let slotWidthChanged = Self.optionalCGFloatChanged(
+            from: visualSlotWidth,
+            to: clampedSlotWidth
+        )
         if magnificationChanged {
             layer?.zPosition = clampedMagnification
         }
         magnification = clampedMagnification
         presenceProgress = clampedProgress
         launchBounceOffset = clampedBounceOffset
+        visualSlotCenterOffsetX = centerOffsetX
+        visualSlotWidth = clampedSlotWidth
         if abs(alphaValue - clampedProgress) > 0.0001 {
             alphaValue = clampedProgress
         }
@@ -352,9 +367,20 @@ final class DockItemButton: NSButton, NSDraggingSource {
         guard magnificationChanged
                 || presenceChanged
                 || bounceChanged
+                || centerOffsetChanged
+                || slotWidthChanged
                 || !NSEqualRects(iconLayerFrame, targetFrame) else { return }
-        updateIconLayer()
-        updateAccessoryFrames()
+        updatePresentationLayers()
+    }
+
+    private var visualSlotFrameInBounds: NSRect {
+        let width = visualSlotWidth ?? bounds.width
+        return NSRect(
+            x: bounds.midX + visualSlotCenterOffsetX - width / 2,
+            y: bounds.minY,
+            width: width,
+            height: bounds.height
+        )
     }
 
     private var magnifiedIconFrame: NSRect {
@@ -367,7 +393,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
         let centeredOriginY = fullOriginY + (fullSide - side) / 2
         let originY = centeredOriginY + (isFlipped ? -launchBounceOffset : launchBounceOffset)
         return NSRect(
-            x: bounds.midX - side / 2,
+            x: visualSlotFrameInBounds.midX - side / 2,
             y: originY,
             width: side,
             height: side
@@ -377,49 +403,78 @@ final class DockItemButton: NSButton, NSDraggingSource {
     /// Keep the decoded icon texture stable and let Core Animation handle the
     /// per-frame scale. AppKit no longer has to resize and redraw an image view
     /// for every pointer sample.
-    private func updateIconLayer() {
-        let targetFrame = magnifiedIconFrame
+    private func updatePresentationLayers() {
+        let targetIconFrame = magnifiedIconFrame
         let baseSide = max(0.001, iconSize)
-        let scale = max(0.000_1, targetFrame.width / baseSide)
-        let targetBounds = NSRect(
+        let scale = max(0.000_1, targetIconFrame.width / baseSide)
+        let targetIconBounds = NSRect(
             x: 0,
             y: 0,
             width: baseSide,
             height: baseSide
         )
-        let targetPosition = NSPoint(
-            x: targetFrame.midX,
-            y: targetFrame.midY
+        let targetIconPosition = NSPoint(
+            x: targetIconFrame.midX,
+            y: targetIconFrame.midY
         )
-        let targetTransform = CGAffineTransform(scaleX: scale, y: scale)
-        let targetHidden = iconImage == nil || targetFrame.width <= 0.000_1
+        let targetIconTransform = CGAffineTransform(scaleX: scale, y: scale)
+        let targetIconHidden = iconImage == nil || targetIconFrame.width <= 0.000_1
 
-        // Changing a button's frame can schedule layout immediately after the
-        // presentation pass. Avoid reopening a Core Animation transaction when
-        // that layout has no visual work left to do.
-        guard !NSEqualRects(iconLayer.bounds, targetBounds)
-                || iconLayer.position != targetPosition
-                || iconLayer.affineTransform() != targetTransform
-                || iconLayer.isHidden != targetHidden else { return }
+        let indicatorY = isFlipped ? bounds.maxY - 5 : bounds.minY + 1
+        let targetIndicatorBounds = NSRect(x: 0, y: 0, width: 4, height: 4)
+        let targetIndicatorPosition = NSPoint(
+            x: visualSlotFrameInBounds.midX,
+            y: indicatorY + 2
+        )
+        let badgeY = isFlipped
+            ? targetIconFrame.minY + 2
+            : targetIconFrame.maxY - 18
+        let targetFailureBounds = NSRect(x: 0, y: 0, width: 16, height: 16)
+        let targetFailurePosition = NSPoint(
+            x: targetIconFrame.maxX - 10,
+            y: badgeY + 8
+        )
+        let targetFailureMaskPosition = NSPoint(x: 8, y: 8)
 
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        iconLayer.bounds = targetBounds
-        iconLayer.position = targetPosition
-        iconLayer.setAffineTransform(targetTransform)
-        iconLayer.isHidden = targetHidden
-        CATransaction.commit()
+        guard !NSEqualRects(iconLayer.bounds, targetIconBounds)
+                || iconLayer.position != targetIconPosition
+                || iconLayer.affineTransform() != targetIconTransform
+                || iconLayer.isHidden != targetIconHidden
+                || !NSEqualRects(runningIndicatorLayer.bounds, targetIndicatorBounds)
+                || runningIndicatorLayer.position != targetIndicatorPosition
+                || !NSEqualRects(failureIndicatorLayer.bounds, targetFailureBounds)
+                || failureIndicatorLayer.position != targetFailurePosition
+                || !NSEqualRects(failureIndicatorMaskLayer.bounds, targetFailureBounds)
+                || failureIndicatorMaskLayer.position != targetFailureMaskPosition else { return }
+
+        withoutImplicitLayerActions {
+            iconLayer.bounds = targetIconBounds
+            iconLayer.position = targetIconPosition
+            iconLayer.setAffineTransform(targetIconTransform)
+            iconLayer.isHidden = targetIconHidden
+            runningIndicatorLayer.bounds = targetIndicatorBounds
+            runningIndicatorLayer.position = targetIndicatorPosition
+            failureIndicatorLayer.bounds = targetFailureBounds
+            failureIndicatorLayer.position = targetFailurePosition
+            failureIndicatorMaskLayer.bounds = targetFailureBounds
+            failureIndicatorMaskLayer.position = targetFailureMaskPosition
+        }
     }
 
     private func updateIconContentsScale() {
         let scale = window?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
             ?? 2
-        guard iconLayer.contentsScale != scale else { return }
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        iconLayer.contentsScale = scale
-        CATransaction.commit()
+        guard iconLayer.contentsScale != scale
+                || runningIndicatorLayer.contentsScale != scale
+                || failureIndicatorLayer.contentsScale != scale
+                || failureIndicatorMaskLayer.contentsScale != scale else { return }
+        withoutImplicitLayerActions {
+            iconLayer.contentsScale = scale
+            runningIndicatorLayer.contentsScale = scale
+            failureIndicatorLayer.contentsScale = scale
+            failureIndicatorMaskLayer.contentsScale = scale
+        }
     }
 
     private var iconLayerFrame: NSRect {
@@ -434,34 +489,27 @@ final class DockItemButton: NSButton, NSDraggingSource {
 
     private func setIconImage(_ image: NSImage?) {
         iconImage = image
-        let contents: CGImage?
-        if let image {
-            var proposedRect = NSRect(origin: .zero, size: image.size)
-            contents = image.cgImage(
-                forProposedRect: &proposedRect,
-                context: nil,
-                hints: nil
-            )
-        } else {
-            contents = nil
-        }
+        let contents = Self.cgImage(from: image)
 
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        iconLayer.contents = contents
-        CATransaction.commit()
+        withoutImplicitLayerActions {
+            iconLayer.contents = contents
+        }
         updateIconContentsScale()
-        updateIconLayer()
+        updatePresentationLayers()
     }
 
     func iconFrame(in view: NSView) -> NSRect {
         convert(magnifiedIconFrame, to: view)
     }
 
+    func visualSlotFrame(in view: NSView) -> NSRect {
+        convert(visualSlotFrameInBounds, to: view)
+    }
+
     /// Keeps horizontal ownership stable while neighboring icons move, but
     /// excludes the invisible headroom above and below the rendered icon.
     func tooltipHoverFrame(in view: NSView) -> NSRect {
-        let controlFrame = convert(bounds, to: view)
+        let controlFrame = visualSlotFrame(in: view)
         let iconFrame = iconFrame(in: view)
         return NSRect(
             x: controlFrame.minX,
@@ -471,23 +519,39 @@ final class DockItemButton: NSButton, NSDraggingSource {
         )
     }
 
-    private func updateAccessoryFrames() {
-        let indicatorY = isFlipped ? bounds.maxY - 5 : bounds.minY + 1
-        let indicatorFrame = NSRect(
-            x: bounds.midX - 2,
-            y: indicatorY,
-            width: 4,
-            height: 4
+    private static func cgImage(from image: NSImage?) -> CGImage? {
+        guard let image else { return nil }
+        var proposedRect = NSRect(origin: .zero, size: image.size)
+        return image.cgImage(
+            forProposedRect: &proposedRect,
+            context: nil,
+            hints: nil
         )
-        if !NSEqualRects(runningIndicator.frame, indicatorFrame) {
-            runningIndicator.frame = indicatorFrame
+    }
+
+    private static func optionalCGFloatChanged(
+        from oldValue: CGFloat?,
+        to newValue: CGFloat?
+    ) -> Bool {
+        switch (oldValue, newValue) {
+        case let (oldValue?, newValue?):
+            return abs(oldValue - newValue) > 0.0001
+        case (nil, nil):
+            return false
+        default:
+            return true
         }
-        let iconFrame = magnifiedIconFrame
-        let badgeY = isFlipped ? iconFrame.minY + 2 : iconFrame.maxY - 18
-        let badgeFrame = NSRect(x: iconFrame.maxX - 18, y: badgeY, width: 16, height: 16)
-        if !NSEqualRects(failureImageView.frame, badgeFrame) {
-            failureImageView.frame = badgeFrame
+    }
+
+    private func withoutImplicitLayerActions(_ updates: () -> Void) {
+        guard !CATransaction.disableActions() else {
+            updates()
+            return
         }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        updates()
+        CATransaction.commit()
     }
 
     @objc private func didPress() {

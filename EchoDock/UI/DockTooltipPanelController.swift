@@ -194,6 +194,89 @@ struct DockTooltipPanelUpdatePlan: Equatable {
     }
 }
 
+struct DockTooltipCanvasLayout: Equatable {
+    static let horizontalMargin: CGFloat = 128
+    static let verticalMargin: CGFloat = 96
+
+    let canvasFrame: NSRect
+    let bubbleFrameInCanvas: NSRect
+
+    static func make(
+        bubbleScreenFrame: NSRect,
+        currentCanvasFrame: NSRect,
+        screenFrame: NSRect,
+        keepsCurrentCanvas: Bool
+    ) -> Self {
+        let canReuseCurrentCanvas = keepsCurrentCanvas
+            && currentCanvasFrame.width > 0
+            && currentCanvasFrame.height > 0
+            && currentCanvasFrame.contains(bubbleScreenFrame)
+        let canvasFrame = canReuseCurrentCanvas
+            ? currentCanvasFrame
+            : centeredCanvasFrame(
+                around: bubbleScreenFrame,
+                screenFrame: screenFrame
+            )
+        return Self(
+            canvasFrame: canvasFrame,
+            bubbleFrameInCanvas: bubbleScreenFrame.offsetBy(
+                dx: -canvasFrame.minX,
+                dy: -canvasFrame.minY
+            )
+        )
+    }
+
+    private static func centeredCanvasFrame(
+        around bubbleFrame: NSRect,
+        screenFrame: NSRect
+    ) -> NSRect {
+        let width = max(
+            bubbleFrame.width,
+            min(
+                screenFrame.width,
+                bubbleFrame.width + horizontalMargin * 2
+            )
+        )
+        let height = max(
+            bubbleFrame.height,
+            min(
+                screenFrame.height,
+                bubbleFrame.height + verticalMargin * 2
+            )
+        )
+        let size = NSSize(width: width, height: height)
+        let idealOrigin = NSPoint(
+            x: bubbleFrame.midX - width / 2,
+            y: bubbleFrame.midY - height / 2
+        )
+        return NSRect(
+            origin: clampedOrigin(
+                idealOrigin,
+                size: size,
+                screenFrame: screenFrame
+            ),
+            size: size
+        )
+    }
+
+    private static func clampedOrigin(
+        _ origin: NSPoint,
+        size: NSSize,
+        screenFrame: NSRect
+    ) -> NSPoint {
+        let maximumX = screenFrame.maxX - size.width
+        let maximumY = screenFrame.maxY - size.height
+        return NSPoint(
+            x: maximumX >= screenFrame.minX
+                ? min(maximumX, max(screenFrame.minX, origin.x))
+                : screenFrame.midX - size.width / 2,
+            y: maximumY >= screenFrame.minY
+                ? min(maximumY, max(screenFrame.minY, origin.y))
+                : screenFrame.midY - size.height / 2
+        )
+    }
+}
+
 enum DockTooltipOpacity {
     static let fadeAnimationKey = "EchoDock.tooltip.fadeOut"
 
@@ -214,12 +297,15 @@ enum DockTooltipOpacity {
 @MainActor
 final class DockTooltipPanelController {
     private let panel = DockTooltipPanel()
+    private let canvasView = NSView()
     private let bubbleView = DockTooltipBubbleView()
     private var fadeState = DockTooltipFadeState()
     private var cachedFittingSize: NSSize?
 
     init() {
-        panel.contentView = bubbleView
+        canvasView.autoresizingMask = [.width, .height]
+        canvasView.addSubview(bubbleView)
+        panel.contentView = canvasView
     }
 
     func present(_ presentation: DockTooltipPresentation?) {
@@ -245,15 +331,21 @@ final class DockTooltipPanelController {
             panelSize: size,
             backingScaleFactor: presentation.backingScaleFactor
         )
+        let bubbleScreenFrame = NSRect(origin: origin, size: size)
+        let canvasLayout = DockTooltipCanvasLayout.make(
+            bubbleScreenFrame: bubbleScreenFrame,
+            currentCanvasFrame: panel.frame,
+            screenFrame: presentation.screenFrame,
+            keepsCurrentCanvas: panel.isVisible
+        )
         bubbleView.arrowX = DockTooltipStyle.arrowX(
             anchorScreenRect: presentation.anchorScreenRect,
-            panelOriginX: origin.x,
+            panelOriginX: bubbleScreenFrame.minX,
             backingScaleFactor: presentation.backingScaleFactor
         )
-        let targetFrame = NSRect(origin: origin, size: size)
         let updatePlan = DockTooltipPanelUpdatePlan.make(
             currentFrame: panel.frame,
-            targetFrame: targetFrame,
+            targetFrame: canvasLayout.canvasFrame,
             isVisible: panel.isVisible,
             isFadeActive: fadeState.isActive
         )
@@ -261,7 +353,10 @@ final class DockTooltipPanelController {
             cancelFadeOut()
         }
         if updatePlan.updatesFrame {
-            panel.setFrame(targetFrame, display: false)
+            panel.setFrame(canvasLayout.canvasFrame, display: false)
+        }
+        if !NSEqualRects(bubbleView.frame, canvasLayout.bubbleFrameInCanvas) {
+            bubbleView.frame = canvasLayout.bubbleFrameInCanvas
         }
         if updatePlan.ordersFront {
             panel.orderFrontRegardless()
