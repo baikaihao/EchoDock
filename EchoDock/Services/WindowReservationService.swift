@@ -22,10 +22,25 @@ private func windowReservationObserverCallback(
     }
 }
 
+private enum WindowReservationEvaluationReason: Hashable {
+    case passiveRefresh
+    case moved
+    case resized
+}
+
+private extension Set where Element == WindowReservationEvaluationReason {
+    var edgeSnapInteraction: WindowEdgeSnapInteraction? {
+        if contains(.resized) { return .resize }
+        if contains(.moved) { return .move }
+        return nil
+    }
+}
+
 @MainActor
 final class WindowReservationService {
     typealias DisplayEnabledProvider = (DisplayIdentity) -> Bool
     typealias ReservationHeightProvider = (DisplayDescriptor) -> CGFloat
+    typealias SnapRegionsProvider = () -> [WindowEdgeSnapRegion]
 
     private static let messagingTimeout: Float = 0.2
     private static let evaluationDelay: TimeInterval = 0.05
@@ -44,6 +59,7 @@ final class WindowReservationService {
     private let isAutoHide: () -> Bool
     private let isDisplayEnabled: DisplayEnabledProvider
     private let reservationHeightProvider: ReservationHeightProvider
+    private let snapRegionsProvider: SnapRegionsProvider
 
     private var workspaceObservers: [NSObjectProtocol] = []
     private var applicationObservers: [NSObjectProtocol] = []
@@ -65,7 +81,8 @@ final class WindowReservationService {
         preferences: PreferencesStore,
         topologyProvider: DisplayTopologyProvider = DisplayTopologyProvider(),
         workspace: NSWorkspace = .shared,
-        permissionService: AccessibilityPermissionService = AccessibilityPermissionService()
+        permissionService: AccessibilityPermissionService = AccessibilityPermissionService(),
+        snapRegionsProvider: @escaping SnapRegionsProvider = { [] }
     ) {
         self.init(
             topologyProvider: topologyProvider,
@@ -77,7 +94,8 @@ final class WindowReservationService {
             isDisplayEnabled: { preferences.isDisplayEnabled($0) },
             reservationHeightProvider: {
                 _ in WindowReservationMetrics.reservedHeight(iconSize: preferences.iconSize)
-            }
+            },
+            snapRegionsProvider: snapRegionsProvider
         )
     }
 
@@ -90,7 +108,8 @@ final class WindowReservationService {
         isDockEnabled: @escaping () -> Bool,
         isAutoHide: @escaping () -> Bool,
         isDisplayEnabled: @escaping DisplayEnabledProvider,
-        reservationHeightProvider: @escaping ReservationHeightProvider
+        reservationHeightProvider: @escaping ReservationHeightProvider,
+        snapRegionsProvider: @escaping SnapRegionsProvider = { [] }
     ) {
         self.topologyProvider = topologyProvider
         self.workspace = workspace
@@ -101,6 +120,7 @@ final class WindowReservationService {
         self.isAutoHide = isAutoHide
         self.isDisplayEnabled = isDisplayEnabled
         self.reservationHeightProvider = reservationHeightProvider
+        self.snapRegionsProvider = snapRegionsProvider
     }
 
     func start() {
@@ -242,16 +262,26 @@ final class WindowReservationService {
         case kAXWindowCreatedNotification,
              kAXFocusedWindowChangedNotification:
             refreshWindows(processIdentifier: processIdentifier)
-        case kAXMovedNotification,
-             kAXResizedNotification:
+        case kAXMovedNotification:
             guard let frame = accessibilityFrame(of: element),
                   !consumeSuppressedMutation(for: element, currentFrame: frame) else {
                 return
             }
-            // macOS can emit several AX events during one zoom or tile
-            // animation. Wait for a short quiet period so our size write does
-            // not fight WindowServer and make the bottom edge oscillate.
-            scheduleEvaluation(of: element, processIdentifier: processIdentifier)
+            scheduleEvaluation(
+                of: element,
+                processIdentifier: processIdentifier,
+                reason: .moved
+            )
+        case kAXResizedNotification:
+            guard let frame = accessibilityFrame(of: element),
+                  !consumeSuppressedMutation(for: element, currentFrame: frame) else {
+                return
+            }
+            scheduleEvaluation(
+                of: element,
+                processIdentifier: processIdentifier,
+                reason: .resized
+            )
         case kAXWindowMiniaturizedNotification,
              kAXWindowDeminiaturizedNotification:
             guard let frame = accessibilityFrame(of: element),
@@ -701,7 +731,8 @@ final class WindowReservationService {
 
     private func scheduleEvaluation(
         of window: AXUIElement,
-        processIdentifier: pid_t
+        processIdentifier: pid_t,
+        reason: WindowReservationEvaluationReason = .passiveRefresh
     ) {
         evaluationRevision &+= 1
         let revision = evaluationRevision
@@ -710,32 +741,68 @@ final class WindowReservationService {
             elementsAreEqual($0.element, window)
         }) {
             existing.revision = revision
+            existing.reasons.insert(reason)
         } else {
             pendingEvaluations.append(PendingEvaluation(
                 element: window,
                 processIdentifier: processIdentifier,
-                revision: revision
+                revision: revision,
+                reasons: [reason]
             ))
         }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.evaluationDelay) { [weak self] in
-            guard let self,
-                  self.isStarted,
-                  self.lifecycleGeneration == generation,
-                  let request = self.pendingEvaluations.first(where: {
-                    self.elementsAreEqual($0.element, window)
-                  }),
-                  request.revision == revision else {
-                return
-            }
-            self.pendingEvaluations.removeAll {
-                self.elementsAreEqual($0.element, window)
-            }
-            self.evaluate(window: window, processIdentifier: processIdentifier)
+            self?.finishScheduledEvaluation(
+                of: window,
+                processIdentifier: processIdentifier,
+                revision: revision,
+                generation: generation
+            )
         }
     }
 
-    private func evaluate(window: AXUIElement, processIdentifier: pid_t) {
+    private func finishScheduledEvaluation(
+        of window: AXUIElement,
+        processIdentifier: pid_t,
+        revision: UInt64,
+        generation: UInt64
+    ) {
+        guard isStarted,
+              lifecycleGeneration == generation,
+              let request = pendingEvaluations.first(where: {
+                elementsAreEqual($0.element, window)
+              }),
+              request.revision == revision else {
+            return
+        }
+        if WindowEdgeSnapInteractionPolicy.shouldDeferUntilMouseRelease(
+            interaction: request.reasons.edgeSnapInteraction,
+            pressedMouseButtons: NSEvent.pressedMouseButtons
+        ) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.evaluationDelay) { [weak self] in
+                self?.finishScheduledEvaluation(
+                    of: window,
+                    processIdentifier: processIdentifier,
+                    revision: revision,
+                    generation: generation
+                )
+            }
+            return
+        }
+
+        pendingEvaluations.removeAll { elementsAreEqual($0.element, window) }
+        evaluate(
+            window: window,
+            processIdentifier: processIdentifier,
+            reasons: request.reasons
+        )
+    }
+
+    private func evaluate(
+        window: AXUIElement,
+        processIdentifier: pid_t,
+        reasons: Set<WindowReservationEvaluationReason>
+    ) {
         guard observedApplications[processIdentifier] != nil,
               let currentFrame = accessibilityFrame(of: window) else {
             return
@@ -762,27 +829,54 @@ final class WindowReservationService {
             managedWindows.remove(at: index)
         }
 
-        guard isOrdinaryResizableWindow(window),
-              let adjustment = WindowReservationGeometryPolicy.adjustment(
-                for: currentFrame,
-                displays: displayGeometries
-              ),
-              let appliedFrame = setAccessibilityFrame(
-                adjustment.targetFrame,
-                of: window
-              ),
-              appliedFrame.maxY <= adjustment.targetFrame.maxY
-                + WindowReservationGeometryPolicy.defaultFrameTolerance else {
+        guard isOrdinaryResizableWindow(window) else {
             return
         }
 
-        managedWindows.append(ManagedWindow(
-            element: window,
-            processIdentifier: processIdentifier,
-            originalFrame: currentFrame,
-            reservedFrame: appliedFrame,
-            displayIdentity: adjustment.displayIdentity
-        ))
+        if let adjustment = WindowReservationGeometryPolicy.adjustment(
+            for: currentFrame,
+            displays: displayGeometries
+        ), let appliedFrame = setAccessibilityFrame(
+            adjustment.targetFrame,
+            of: window
+        ), appliedFrame.maxY <= adjustment.targetFrame.maxY
+            + WindowReservationGeometryPolicy.defaultFrameTolerance {
+            managedWindows.append(ManagedWindow(
+                element: window,
+                processIdentifier: processIdentifier,
+                originalFrame: currentFrame,
+                reservedFrame: appliedFrame,
+                displayIdentity: adjustment.displayIdentity
+            ))
+            return
+        }
+
+        guard let interaction = reasons.edgeSnapInteraction,
+              let display = WindowReservationGeometryPolicy.bestDisplay(
+                for: currentFrame,
+                displays: displayGeometries
+              ),
+              !WindowReservationGeometryPolicy.isLikelyFullScreen(
+                currentFrame,
+                in: display
+              ),
+              let snapAdjustment = WindowEdgeSnapGeometryPolicy.adjustment(
+                for: currentFrame,
+                interaction: interaction,
+                regions: snapRegionsProvider().filter {
+                    $0.displayIdentity == display.identity
+                }
+              ),
+              let appliedFrame = setAccessibilityFrame(
+                snapAdjustment.targetFrame,
+                of: window
+              ),
+              WindowReservationGeometryPolicy.framesApproximatelyEqual(
+                appliedFrame,
+                snapAdjustment.targetFrame
+              ) else {
+            return
+        }
     }
 
     private func evaluateManagedWindowWhileInactive(
@@ -1231,11 +1325,18 @@ private final class PendingEvaluation {
     let element: AXUIElement
     let processIdentifier: pid_t
     var revision: UInt64
+    var reasons: Set<WindowReservationEvaluationReason>
 
-    init(element: AXUIElement, processIdentifier: pid_t, revision: UInt64) {
+    init(
+        element: AXUIElement,
+        processIdentifier: pid_t,
+        revision: UInt64,
+        reasons: Set<WindowReservationEvaluationReason>
+    ) {
         self.element = element
         self.processIdentifier = processIdentifier
         self.revision = revision
+        self.reasons = reasons
     }
 }
 

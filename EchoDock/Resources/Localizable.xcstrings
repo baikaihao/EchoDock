@@ -1690,13 +1690,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Keep maximized and tiled windows above EchoDock."
+            "value" : "Keep maximized and tiled windows clear of EchoDock, and snap manually moved windows to its edge."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "让最大化和分屏窗口保持在 EchoDock 上方。"
+            "value" : "让最大化和分屏窗口避开 EchoDock，手动移动或缩放窗口时可吸附到其边缘。"
           }
         }
       }

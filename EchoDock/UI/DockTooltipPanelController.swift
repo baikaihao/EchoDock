@@ -302,6 +302,16 @@ final class DockTooltipPanelController {
     private var fadeState = DockTooltipFadeState()
     private var cachedFittingSize: NSSize?
 
+    var visibleBubbleFrameInScreen: NSRect? {
+        guard panel.isVisible,
+              bubbleView.bounds.width > 0,
+              bubbleView.bounds.height > 0 else {
+            return nil
+        }
+        let frameInWindow = bubbleView.convert(bubbleView.bounds, to: nil)
+        return panel.convertToScreen(frameInWindow)
+    }
+
     init() {
         canvasView.autoresizingMask = [.width, .height]
         canvasView.addSubview(bubbleView)
@@ -435,7 +445,7 @@ final class DockTooltipPanel: NSPanel {
         hasShadow = false
         acceptsMouseMovedEvents = false
         ignoresMouseEvents = true
-        level = .statusBar
+        level = EchoDockWindowLevel.dock
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         hidesOnDeactivate = false
         isMovable = false

@@ -103,12 +103,24 @@ final class DockBackgroundSurfaceTests: XCTestCase {
         ))
     }
 
+    func testLiquidRimAlignsEveryEdgeToPhysicalPixels() {
+        let scale: CGFloat = 2
+        let aligned = DockBackgroundRim.pixelAligned(
+            NSRect(x: 10.24, y: 0.26, width: 101.39, height: 71.51),
+            scale: scale
+        )
+
+        for edge in [aligned.minX, aligned.minY, aligned.maxX, aligned.maxY] {
+            XCTAssertEqual(edge * scale, (edge * scale).rounded())
+        }
+    }
+
     func testLiquidGlassExposesTransparencyButNotBlurTuning() {
         XCTAssertTrue(DockBackgroundTuningPolicy.allowsTransparencyTuning(
             supportsLiquidGlass: true,
             selectedStyle: .classic
         ))
-        XCTAssertFalse(DockBackgroundTuningPolicy.allowsTransparencyTuning(
+        XCTAssertTrue(DockBackgroundTuningPolicy.allowsTransparencyTuning(
             supportsLiquidGlass: true,
             selectedStyle: .liquidGlass
         ))
@@ -173,13 +185,34 @@ final class DockBackgroundSurfaceTests: XCTestCase {
         let rimLayer = try XCTUnwrap(
             view.layer?.sublayers?.first { $0.zPosition == 10 }
         )
-        let glassContentView = try XCTUnwrap(glassView.contentView)
+        let glassContentProxy = try XCTUnwrap(glassView.contentView)
+        let contentHost = try XCTUnwrap(scrollView.superview)
+        let liquidOuterRimLayer = try XCTUnwrap(
+            contentHost.layer?.sublayers?.first { $0.zPosition == -2 }
+                as? CAShapeLayer
+        )
+        let liquidSpecularRimLayer = try XCTUnwrap(
+            contentHost.layer?.sublayers?.first { $0.zPosition == -1 }
+                as? CAGradientLayer
+        )
+        let liquidSpecularMaskLayer = try XCTUnwrap(
+            liquidSpecularRimLayer.mask as? CAShapeLayer
+        )
+        let expectedLiquidRimFrame = contentHost.convert(
+            bodyFrame,
+            from: view
+        )
         XCTAssertEqual(glassViews.count, 1)
-        XCTAssertEqual(view.subviews.count, 1)
-        XCTAssertTrue(isDescendant(scrollView, of: glassContentView))
+        XCTAssertEqual(view.subviews.count, 2)
+        XCTAssertTrue(contentHost.superview === view)
+        XCTAssertFalse(isDescendant(scrollView, of: glassView))
+        XCTAssertNil(firstDescendant(of: NSScrollView.self, in: glassContentProxy))
         XCTAssertEqual(glassView.style, .clear)
         XCTAssertNil(glassView.tintColor)
-        XCTAssertEqual(glassView.alphaValue, 1)
+        let expectedOpacity = NSWorkspace.shared
+            .accessibilityDisplayShouldIncreaseContrast ? 0.68 : 0.1
+        XCTAssertEqual(glassView.alphaValue, expectedOpacity, accuracy: 0.000_1)
+        XCTAssertEqual(contentHost.alphaValue, 1)
         XCTAssertNil(glassView.layer?.mask)
         XCTAssertEqual(glassView.frame, bodyFrame)
         XCTAssertEqual(scrollView.convert(scrollView.bounds, to: view), hostedFrame)
@@ -189,6 +222,22 @@ final class DockBackgroundSurfaceTests: XCTestCase {
         )
         XCTAssertTrue(rimLayer.isHidden)
         XCTAssertNil(rimLayer.borderColor)
+        XCTAssertFalse(liquidOuterRimLayer.isHidden)
+        XCTAssertFalse(liquidSpecularRimLayer.isHidden)
+        XCTAssertEqual(liquidOuterRimLayer.frame, expectedLiquidRimFrame)
+        XCTAssertEqual(liquidSpecularRimLayer.frame, expectedLiquidRimFrame)
+        XCTAssertNotNil(liquidOuterRimLayer.path)
+        XCTAssertNotNil(liquidSpecularMaskLayer.path)
+        XCTAssertEqual(
+            liquidOuterRimLayer.lineWidth,
+            1 / window.backingScaleFactor,
+            accuracy: 0.000_1
+        )
+        XCTAssertEqual(
+            liquidSpecularMaskLayer.lineWidth,
+            1 / window.backingScaleFactor,
+            accuracy: 0.000_1
+        )
 
         let expandedBodyFrame = NSRect(x: 20, y: 0, width: 460, height: 72)
         view.setVisibleBodyFrame(expandedBodyFrame)
@@ -198,6 +247,20 @@ final class DockBackgroundSurfaceTests: XCTestCase {
         XCTAssertNil(glassView.layer?.mask)
         XCTAssertTrue(rimLayer.isHidden)
         XCTAssertNil(rimLayer.borderColor)
+        let expectedExpandedLiquidRimFrame = contentHost.convert(
+            expandedBodyFrame,
+            from: view
+        )
+        XCTAssertEqual(
+            liquidOuterRimLayer.frame,
+            expectedExpandedLiquidRimFrame
+        )
+        XCTAssertEqual(
+            liquidSpecularRimLayer.frame,
+            expectedExpandedLiquidRimFrame
+        )
+        XCTAssertNotNil(liquidOuterRimLayer.path)
+        XCTAssertNotNil(liquidSpecularMaskLayer.path)
     }
 
     @MainActor
@@ -262,6 +325,31 @@ final class DockBackgroundSurfaceTests: XCTestCase {
     }
 
     @MainActor
+    func testHostedVisualHitMissDoesNotFallBackToStableButtonFrame() {
+        let view = DockBackgroundSurfaceView(
+            frame: NSRect(x: 0, y: 0, width: 300, height: 100)
+        )
+        let interactionView = NSView()
+        let staleButton = NSButton(
+            frame: NSRect(x: 80, y: 12, width: 48, height: 48)
+        )
+        interactionView.addSubview(staleButton)
+        view.hostContent(
+            interactionView,
+            interactionRoot: interactionView,
+            hostedHitTest: { _ in nil }
+        )
+        view.setHostedContentFrame(view.bounds)
+        view.layoutSubtreeIfNeeded()
+
+        let staleButtonCenter = staleButton.convert(
+            NSPoint(x: staleButton.bounds.midX, y: staleButton.bounds.midY),
+            to: view
+        )
+        XCTAssertTrue(view.hitTest(staleButtonCenter) === interactionView)
+    }
+
+    @MainActor
     func testDockContentKeepsOneHostedScrollTreeAcrossStyleChanges() throws {
         guard #available(macOS 26.0, *) else {
             throw XCTSkip("NSGlassEffectView requires macOS 26")
@@ -289,10 +377,14 @@ final class DockBackgroundSurfaceTests: XCTestCase {
         )
         let scrollView = try XCTUnwrap(firstDescendant(
             of: NSScrollView.self,
-            in: try XCTUnwrap(firstGlass.contentView)
+            in: backgroundView
         ))
         XCTAssertEqual(dock.subviews.count, 1)
-        XCTAssertTrue(isDescendant(scrollView, of: firstGlass))
+        XCTAssertFalse(isDescendant(scrollView, of: firstGlass))
+        XCTAssertNil(firstDescendant(
+            of: NSScrollView.self,
+            in: try XCTUnwrap(firstGlass.contentView)
+        ))
 
         apply(style: .classic)
         XCTAssertEqual(dock.subviews.count, 1)
@@ -303,10 +395,14 @@ final class DockBackgroundSurfaceTests: XCTestCase {
         let secondGlass = try XCTUnwrap(
             backgroundView.subviews.compactMap { $0 as? NSGlassEffectView }.first
         )
-        XCTAssertTrue(isDescendant(scrollView, of: secondGlass))
-        XCTAssertTrue(firstDescendant(
+        XCTAssertFalse(isDescendant(scrollView, of: secondGlass))
+        XCTAssertNil(firstDescendant(
             of: NSScrollView.self,
             in: try XCTUnwrap(secondGlass.contentView)
+        ))
+        XCTAssertTrue(firstDescendant(
+            of: NSScrollView.self,
+            in: backgroundView
         ) === scrollView)
     }
 

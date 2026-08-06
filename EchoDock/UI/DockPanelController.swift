@@ -175,6 +175,8 @@ final class DockPanelController {
     private var hasAppliedExternalSnapshot = false
     private var isLaunchBounceActive = false
     private var isFullScreenActive = false
+    private var isInputCandidateOccluding = false
+    private var cachedInputCandidateAvoidanceFrameInScreen: NSRect?
 
     private var presentationMode: DockPanelPresentationMode {
         DockPanelPresentationPolicy.mode(
@@ -182,6 +184,45 @@ final class DockPanelController {
             autoHideInFullScreen: preferences.autoHideInFullScreen,
             isFullScreenActive: isFullScreenActive
         )
+    }
+
+    var restingDockBodyFrameInScreen: NSRect? {
+        guard panel.isVisible,
+              presentationMode != .suppressed else {
+            return nil
+        }
+        return resolvedRestingDockBodyFrameInScreen
+    }
+
+    var inputCandidateAvoidanceFrameInScreen: NSRect? {
+        if isInputCandidateOccluding {
+            return cachedInputCandidateAvoidanceFrameInScreen
+                ?? resolvedRestingDockBodyFrameInScreen
+        }
+
+        let dockFrame = panel.isVisible
+            ? resolvedCurrentDockVisualFrameInScreen
+            : resolvedRestingDockBodyFrameInScreen
+        guard var avoidanceFrame = dockFrame else { return nil }
+        if let tooltipFrame = tooltipPanelController.visibleBubbleFrameInScreen {
+            avoidanceFrame = avoidanceFrame.union(tooltipFrame)
+        }
+        cachedInputCandidateAvoidanceFrameInScreen = avoidanceFrame
+        return avoidanceFrame
+    }
+
+    private var resolvedRestingDockBodyFrameInScreen: NSRect? {
+        resolvedContentFrameInScreen(contentView.restingDockBodyFrame)
+    }
+
+    private var resolvedCurrentDockVisualFrameInScreen: NSRect? {
+        resolvedContentFrameInScreen(contentView.currentDockVisualFrame)
+    }
+
+    private func resolvedContentFrameInScreen(_ frame: NSRect) -> NSRect? {
+        guard frame.width > 0, frame.height > 0 else { return nil }
+        let frameInWindow = contentView.convert(frame, to: nil)
+        return panel.convertToScreen(frameInWindow)
     }
 
     init(
@@ -288,9 +329,7 @@ final class DockPanelController {
             self?.contentView.draggingEnded(sender)
         }
         panel.contentView = contentView
-        dragReceiverPanel.level = NSWindow.Level(
-            rawValue: NSWindow.Level.statusBar.rawValue + 1
-        )
+        dragReceiverPanel.level = EchoDockWindowLevel.dragReceiver
         dragReceiverPanel.ignoresMouseEvents = true
         dragReceiverPanel.onDraggingEntered = { [weak self] sender in
             self?.contentView.draggingEntered(sender) ?? []
@@ -321,12 +360,19 @@ final class DockPanelController {
         guard self.descriptor != descriptor || self.allDisplays != allDisplays else { return }
         self.descriptor = descriptor
         self.allDisplays = allDisplays
+        cachedInputCandidateAvoidanceFrameInScreen = nil
         applyLayout()
     }
 
     func setFullScreenActive(_ isActive: Bool) {
         guard isFullScreenActive != isActive else { return }
         isFullScreenActive = isActive
+        reconcilePresentationMode(animated: false)
+    }
+
+    func setInputCandidateOccluding(_ isOccluding: Bool) {
+        guard isInputCandidateOccluding != isOccluding else { return }
+        isInputCandidateOccluding = isOccluding
         reconcilePresentationMode(animated: false)
     }
 
@@ -391,7 +437,10 @@ final class DockPanelController {
         now: Date,
         isFileDrag: Bool = false
     ) {
-        guard presentationMode != .suppressed else { return }
+        guard !isInputCandidateOccluding,
+              presentationMode != .suppressed else {
+            return
+        }
         updateFileDragCaptureRequest(
             preferences.isEnabled && isFileDrag && pressedButtons != 0
         )
@@ -572,10 +621,18 @@ final class DockPanelController {
         if shouldDisplay {
             panel.displayIfNeeded()
         }
+        if isInputCandidateOccluding {
+            cachedInputCandidateAvoidanceFrameInScreen =
+                resolvedCurrentDockVisualFrameInScreen
+                ?? resolvedRestingDockBodyFrameInScreen
+        }
     }
 
     private func show(always: Bool, animated: Bool) {
-        guard presentationMode != .suppressed else { return }
+        guard !isInputCandidateOccluding,
+              presentationMode != .suppressed else {
+            return
+        }
         animationGeneration &+= 1
         let generation = animationGeneration
         state = always ? .alwaysVisible : .showing
@@ -648,9 +705,14 @@ final class DockPanelController {
         hotZoneEnteredAt = nil
         mouseLeftAt = nil
 
+        if isInputCandidateOccluding {
+            forceHideImmediately()
+            return
+        }
+
         switch presentationMode {
         case .suppressed:
-            forceHideForFullScreen()
+            forceHideImmediately()
         case .autoHidden:
             if state == .alwaysVisible {
                 hide(animated: false)
@@ -660,7 +722,7 @@ final class DockPanelController {
         }
     }
 
-    private func forceHideForFullScreen() {
+    private func forceHideImmediately() {
         animationGeneration &+= 1
         state = .hidden
         contentView.cancelFileDrag()

@@ -366,6 +366,23 @@ final class DockContentView: NSView {
         updateBackgroundFrame()
     }
 
+    var restingDockBodyFrame: NSRect {
+        resolvedBackgroundBodyFrame(
+            for: stripView.restingVisualContentFrame
+        )
+    }
+
+    var currentDockVisualFrame: NSRect {
+        var visualFrame = backgroundBodyFrame
+        for iconFrame in stripView.visibleIconFrames {
+            let convertedIconFrame = stripView.convert(iconFrame, to: self)
+            visualFrame = visualFrame.width > 0 && visualFrame.height > 0
+                ? visualFrame.union(convertedIconFrame)
+                : convertedIconFrame
+        }
+        return visualFrame
+    }
+
     func hideTooltip() {
         // Ordering a panel out does not guarantee a final mouseExited event.
         // Clear the strip-owned hover state as part of every explicit hide so
@@ -1003,21 +1020,22 @@ final class DockContentView: NSView {
         if !NSEqualRects(backgroundView.frame, bounds) {
             backgroundView.frame = bounds
         }
-        let backgroundHeight = min(dockBodyHeight, bounds.height)
-        let fallbackBodyFrame = NSRect(
-            x: bounds.minX,
-            y: bounds.minY,
-            width: bounds.width,
-            height: backgroundHeight
+        let targetBodyFrame = resolvedBackgroundBodyFrame(
+            for: backgroundInteraction.visualContentFrame
         )
+        backgroundBodyFrame = targetBodyFrame
+        backgroundView.setVisibleBodyFrame(targetBodyFrame)
+    }
 
-        let visualFrame = backgroundInteraction.visualContentFrame
-        let targetBodyFrame: NSRect
-        guard visualFrame.width > 0 else {
-            targetBodyFrame = fallbackBodyFrame
-            backgroundBodyFrame = targetBodyFrame
-            backgroundView.setVisibleBodyFrame(targetBodyFrame)
-            return
+    private func resolvedBackgroundBodyFrame(for visualFrame: NSRect) -> NSRect {
+        let backgroundHeight = min(dockBodyHeight, bounds.height)
+        guard bounds.width > 0, visualFrame.width > 0 else {
+            return NSRect(
+                x: bounds.minX,
+                y: bounds.minY,
+                width: bounds.width,
+                height: backgroundHeight
+            )
         }
 
         let converted = stripView.convert(visualFrame, to: self)
@@ -1031,17 +1049,13 @@ final class DockContentView: NSView {
         let scale = window?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
             ?? 2
-        targetBodyFrame = DockBackgroundFrameAlignment.pixelAligned(
+        return DockBackgroundFrameAlignment.pixelAligned(
             NSRect(x: originX, y: 0, width: width, height: backgroundHeight),
             backingScaleFactor: scale
         )
-        backgroundBodyFrame = targetBodyFrame
-        backgroundView.setVisibleBodyFrame(targetBodyFrame)
     }
 
     private func updateBackgroundAppearance() {
-        // Classic mode maps the stored transparency to its material opacity.
-        // Native Liquid Glass stays at full composite strength.
         backgroundView.configure(
             transparency: backgroundTransparency,
             blurStrength: backgroundBlur,
@@ -1365,6 +1379,7 @@ private final class DockStripView: NSView {
     private var iconSize: CGFloat = 48
     private(set) var requiredWidth: CGFloat = 0
     private(set) var visualContentFrame: NSRect = .zero
+    private(set) var restingVisualContentFrame: NSRect = .zero
     private var trackingArea: NSTrackingArea?
     private var pointerX: CGFloat?
     private var pointerPoint: NSPoint?
@@ -2608,6 +2623,10 @@ private final class DockStripView: NSView {
         }
 
         visualContentFrame = layout.visualContentFrame.offsetBy(
+            dx: horizontalOffset,
+            dy: 0
+        )
+        restingVisualContentFrame = layout.restingVisualContentFrame.offsetBy(
             dx: horizontalOffset,
             dy: 0
         )

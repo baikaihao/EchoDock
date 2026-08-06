@@ -1,4 +1,12 @@
 import AppKit
+import CoreGraphics
+
+enum EchoDockWindowLevel {
+    static let dock = NSWindow.Level(
+        rawValue: Int(CGWindowLevelForKey(.dockWindow))
+    )
+    static let dragReceiver = NSWindow.Level(rawValue: dock.rawValue + 1)
+}
 
 final class DockPanel: NSPanel {
     var onPointerEvent: ((NSEvent) -> Void)?
@@ -25,7 +33,7 @@ final class DockPanel: NSPanel {
         // stealing key focus from the foreground app.
         acceptsMouseMovedEvents = true
         ignoresMouseEvents = false
-        level = .statusBar
+        level = EchoDockWindowLevel.dock
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
         hidesOnDeactivate = false
         isMovable = false

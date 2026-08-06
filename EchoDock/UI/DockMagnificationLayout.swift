@@ -237,6 +237,7 @@ struct DockMagnificationLayout {
         let scales: [CGFloat]
         let separatorFrames: [NSRect]
         let separatorScales: [CGFloat]
+        let restingVisualContentFrame: NSRect
         let visualContentFrame: NSRect
 
         var separatorFrame: NSRect? { separatorFrames.first }
@@ -346,6 +347,7 @@ struct DockMagnificationLayout {
                 scales: [],
                 separatorFrames: [],
                 separatorScales: [],
+                restingVisualContentFrame: .zero,
                 visualContentFrame: .zero
             )
         }
@@ -475,6 +477,12 @@ struct DockMagnificationLayout {
                 return separatorFrame(slotFrame: slotFrame, scale: scale, iconSize: iconSize)
             },
             separatorScales: separatorScales.compactMap { $0 },
+            restingVisualContentFrame: NSRect(
+                x: contentStart,
+                y: 0,
+                width: baseWidth,
+                height: height
+            ),
             visualContentFrame: NSRect(
                 x: dynamicStart,
                 y: 0,

@@ -345,5 +345,9 @@ final class DockPointerSchedulingTests: XCTestCase {
             magnifiedLayout.visualContentFrame,
             idleLayout.visualContentFrame
         )
+        XCTAssertEqual(
+            magnifiedLayout.restingVisualContentFrame,
+            idleLayout.restingVisualContentFrame
+        )
     }
 }

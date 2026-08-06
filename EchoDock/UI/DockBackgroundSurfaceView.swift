@@ -78,6 +78,20 @@ enum DockBackgroundGaussianBlur {
 enum DockBackgroundRim {
     static let fullVisibilityMaterialOpacity: CGFloat = 0.15
 
+    static func pixelAligned(_ rect: NSRect, scale: CGFloat) -> NSRect {
+        let scale = max(1, scale)
+        let minX = (rect.minX * scale).rounded() / scale
+        let minY = (rect.minY * scale).rounded() / scale
+        let maxX = (rect.maxX * scale).rounded() / scale
+        let maxY = (rect.maxY * scale).rounded() / scale
+        return NSRect(
+            x: minX,
+            y: minY,
+            width: max(0, maxX - minX),
+            height: max(0, maxY - minY)
+        )
+    }
+
     static func visibility(forMaterialOpacity opacity: CGFloat) -> CGFloat {
         guard fullVisibilityMaterialOpacity > 0 else { return 0 }
         return min(1, max(0, opacity) / fullVisibilityMaterialOpacity)
@@ -98,7 +112,11 @@ final class DockBackgroundSurfaceView: NSView {
         "filters.\(gaussianBlurFilterName).inputRadius"
 
     private let contentHost = NSView()
+    private let glassContentProxy = NSView()
     private let rimLayer = CALayer()
+    private let liquidOuterRimLayer = CAShapeLayer()
+    private let liquidSpecularRimLayer = CAGradientLayer()
+    private let liquidSpecularRimMaskLayer = CAShapeLayer()
     private let surfaceVisibilityMaskLayer = CALayer()
     private weak var hostedContentView: NSView?
     private weak var interactionRoot: NSView?
@@ -130,13 +148,45 @@ final class DockBackgroundSurfaceView: NSView {
         layer?.shadowOffset = .zero
         layer?.shadowPath = nil
 
+        contentHost.wantsLayer = true
         contentHost.clipsToBounds = false
+        contentHost.layer?.masksToBounds = false
+
+        glassContentProxy.wantsLayer = true
+        glassContentProxy.clipsToBounds = false
+        glassContentProxy.layer?.masksToBounds = false
 
         rimLayer.backgroundColor = nil
         rimLayer.borderWidth = 0.7
         rimLayer.cornerCurve = .continuous
         rimLayer.zPosition = 10
         layer?.addSublayer(rimLayer)
+
+        liquidOuterRimLayer.fillColor = nil
+        liquidOuterRimLayer.strokeColor = NSColor.white
+            .withAlphaComponent(0.16).cgColor
+        liquidOuterRimLayer.zPosition = -2
+        liquidOuterRimLayer.isHidden = true
+        liquidOuterRimLayer.shouldRasterize = false
+        contentHost.layer?.addSublayer(liquidOuterRimLayer)
+
+        liquidSpecularRimLayer.colors = [
+            NSColor.white.withAlphaComponent(0.48).cgColor,
+            NSColor.white.withAlphaComponent(0.22).cgColor,
+            NSColor.white.withAlphaComponent(0.08).cgColor,
+            NSColor.white.withAlphaComponent(0.05).cgColor
+        ]
+        liquidSpecularRimLayer.locations = [0, 0.32, 0.70, 1]
+        liquidSpecularRimLayer.startPoint = CGPoint(x: 0.5, y: 1)
+        liquidSpecularRimLayer.endPoint = CGPoint(x: 0.5, y: 0)
+        liquidSpecularRimLayer.zPosition = -1
+        liquidSpecularRimLayer.isHidden = true
+        liquidSpecularRimLayer.shouldRasterize = false
+        liquidSpecularRimMaskLayer.fillColor = nil
+        liquidSpecularRimMaskLayer.strokeColor = NSColor.black.cgColor
+        liquidSpecularRimMaskLayer.shouldRasterize = false
+        liquidSpecularRimLayer.mask = liquidSpecularRimMaskLayer
+        contentHost.layer?.addSublayer(liquidSpecularRimLayer)
 
         surfaceVisibilityMaskLayer.backgroundColor = NSColor.black.cgColor
         surfaceVisibilityMaskLayer.cornerCurve = .continuous
@@ -161,8 +211,13 @@ final class DockBackgroundSurfaceView: NSView {
             return nil
         }
         let pointInInteractionRoot = interactionRoot.convert(point, from: self)
-        if let hostedHit = hostedHitTest?(pointInInteractionRoot) {
-            return hostedHit
+        if let hostedHitTest {
+            if let hostedHit = hostedHitTest(pointInInteractionRoot) {
+                return hostedHit
+            }
+            return interactionRoot.bounds.contains(pointInInteractionRoot)
+                ? interactionRoot
+                : nil
         }
         return interactionRoot.hitTest(pointInInteractionRoot)
     }
@@ -210,9 +265,8 @@ final class DockBackgroundSurfaceView: NSView {
         needsLayout = true
     }
 
-    /// The frame is expressed in this view's coordinates. Liquid Glass keeps
-    /// its content root body-sized, so the hosted view receives the inverse
-    /// body offset and stays fixed while the glass changes width and origin.
+    /// The frame is expressed in this view's coordinates. The hosted content
+    /// stays in the full-height overlay while the glass body changes width.
     func setHostedContentFrame(_ frame: NSRect) {
         guard hostedContentFrame.map({ NSEqualRects($0, frame) }) != true else { return }
         hostedContentFrame = frame
@@ -430,10 +484,13 @@ final class DockBackgroundSurfaceView: NSView {
 
     private func detachContentHostFromGlass() {
         if #available(macOS 26.0, *),
-           let glass = baseSurface as? NSGlassEffectView,
-           glass.contentView === contentHost {
-            glass.contentView = nil
+           let glass = baseSurface as? NSGlassEffectView {
+            if glass.contentView === contentHost
+                || glass.contentView === glassContentProxy {
+                glass.contentView = nil
+            }
         }
+        glassContentProxy.removeFromSuperview()
         contentHost.removeFromSuperview()
     }
 
@@ -443,45 +500,40 @@ final class DockBackgroundSurfaceView: NSView {
         case .liquidGlass:
             if #available(macOS 26.0, *),
                let glass = baseSurface as? NSGlassEffectView {
-                if glass.contentView !== contentHost {
-                    contentHost.removeFromSuperview()
-                    glass.contentView = contentHost
+                if glass.contentView !== glassContentProxy {
+                    glassContentProxy.removeFromSuperview()
+                    glass.contentView = glassContentProxy
                 }
                 glass.clipsToBounds = false
                 glass.layer?.masksToBounds = false
-                contentHost.clipsToBounds = false
-                contentHost.superview?.clipsToBounds = false
-                contentHost.superview?.layer?.masksToBounds = false
             }
+            attachContentHostAboveSurface(surfaceRoot)
         case .solid, .visualEffect:
-            if contentHost.superview !== self {
-                contentHost.removeFromSuperview()
-                addSubview(contentHost, positioned: .above, relativeTo: surfaceRoot)
-            }
-            if !NSEqualRects(contentHost.frame, bounds) {
-                contentHost.frame = bounds
-            }
+            attachContentHostAboveSurface(surfaceRoot)
         }
         applyHostedContentFrame(bodyRect: currentBodyRect)
     }
 
-    private func applyHostedContentFrame(bodyRect: NSRect) {
-        guard let hostedContentView, let hostedContentFrame else { return }
-        let targetFrame: NSRect
-        if configuration?.material == .liquidGlass {
-            targetFrame = hostedContentFrame.offsetBy(
-                dx: -bodyRect.minX,
-                dy: -bodyRect.minY
-            )
-        } else {
-            if contentHost.superview === self,
-               !NSEqualRects(contentHost.frame, bounds) {
-                contentHost.frame = bounds
-            }
-            targetFrame = hostedContentFrame
+    private func attachContentHostAboveSurface(_ surfaceRoot: NSView) {
+        if contentHost.superview !== self {
+            contentHost.removeFromSuperview()
+            addSubview(contentHost, positioned: .above, relativeTo: surfaceRoot)
         }
-        if !NSEqualRects(hostedContentView.frame, targetFrame) {
-            hostedContentView.frame = targetFrame
+        contentHost.clipsToBounds = false
+        contentHost.layer?.masksToBounds = false
+        if !NSEqualRects(contentHost.frame, bounds) {
+            contentHost.frame = bounds
+        }
+    }
+
+    private func applyHostedContentFrame(bodyRect _: NSRect) {
+        if contentHost.superview === self,
+           !NSEqualRects(contentHost.frame, bounds) {
+            contentHost.frame = bounds
+        }
+        guard let hostedContentView, let hostedContentFrame else { return }
+        if !NSEqualRects(hostedContentView.frame, hostedContentFrame) {
+            hostedContentView.frame = hostedContentFrame
         }
     }
 
@@ -558,13 +610,11 @@ final class DockBackgroundSurfaceView: NSView {
                 if let glass = baseSurface as? NSGlassEffectView {
                     glass.style = .clear
                     glass.tintColor = nil
-                    // alphaValue fades the complete composite, including the
-                    // content, refraction, and specular edge. Native glass has
-                    // no public material-opacity control, so keep it intact.
-                    glass.alphaValue = 1
+                    glass.alphaValue = materialOpacity
                     glass.isHidden = false
                 }
             }
+            contentHost.alphaValue = 1
         }
 
         let rimVisibility: CGFloat
@@ -589,6 +639,20 @@ final class DockBackgroundSurfaceView: NSView {
             : NSColor.white.withAlphaComponent(
                 baseRimAlpha * rimVisibility
             ).cgColor
+
+        let showsLiquidRim = configuration.material == .liquidGlass
+        liquidOuterRimLayer.isHidden = !showsLiquidRim
+        liquidSpecularRimLayer.isHidden = !showsLiquidRim
+        if showsLiquidRim {
+            let contrastBoost: CGFloat = configuration.increasesContrast ? 1.35 : 1
+            liquidOuterRimLayer.strokeColor = NSColor.white
+                .withAlphaComponent(min(1, 0.16 * contrastBoost)).cgColor
+            liquidSpecularRimLayer.colors = [0.48, 0.22, 0.08, 0.05].map {
+                NSColor.white.withAlphaComponent(
+                    min(1, $0 * contrastBoost)
+                ).cgColor
+            }
+        }
     }
 
     private func updateSurfaceVisibilityMask(
@@ -613,10 +677,60 @@ final class DockBackgroundSurfaceView: NSView {
         let scale = window?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
             ?? 2
+        let pixel = 1 / max(1, scale)
+        let alignedBodyRect = DockBackgroundRim.pixelAligned(
+            bodyRect,
+            scale: scale
+        )
+        let liquidRimFrame = contentHost.convert(
+            alignedBodyRect,
+            from: self
+        )
 
         rimLayer.frame = bodyRect
         rimLayer.cornerRadius = cornerRadius
         rimLayer.contentsScale = scale
+
+        liquidOuterRimLayer.frame = liquidRimFrame
+        liquidOuterRimLayer.contentsScale = scale
+        liquidOuterRimLayer.lineWidth = pixel
+        let outerBounds = liquidOuterRimLayer.bounds.insetBy(
+            dx: pixel / 2,
+            dy: pixel / 2
+        )
+        let outerRadius = max(0, cornerRadius - pixel / 2)
+        if outerBounds.width > 0, outerBounds.height > 0 {
+            liquidOuterRimLayer.path = CGPath(
+                roundedRect: outerBounds,
+                cornerWidth: outerRadius,
+                cornerHeight: outerRadius,
+                transform: nil
+            )
+        } else {
+            liquidOuterRimLayer.path = nil
+        }
+
+        liquidSpecularRimLayer.frame = liquidRimFrame
+        liquidSpecularRimLayer.contentsScale = scale
+        liquidSpecularRimMaskLayer.frame = liquidSpecularRimLayer.bounds
+        liquidSpecularRimMaskLayer.contentsScale = scale
+        liquidSpecularRimMaskLayer.lineWidth = pixel
+        let innerInset = pixel * 1.5
+        let innerBounds = liquidSpecularRimLayer.bounds.insetBy(
+            dx: innerInset,
+            dy: innerInset
+        )
+        let innerRadius = max(0, cornerRadius - innerInset)
+        if innerBounds.width > 0, innerBounds.height > 0 {
+            liquidSpecularRimMaskLayer.path = CGPath(
+                roundedRect: innerBounds,
+                cornerWidth: innerRadius,
+                cornerHeight: innerRadius,
+                transform: nil
+            )
+        } else {
+            liquidSpecularRimMaskLayer.path = nil
+        }
     }
 }
 

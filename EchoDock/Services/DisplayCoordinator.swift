@@ -6,6 +6,7 @@ final class DisplayCoordinator {
     private let preferences: PreferencesStore
     private let mouseMonitor: MouseEdgeMonitor
     private let fullScreenMonitor: FullScreenDisplayMonitor
+    private let inputCandidateMonitor: InputCandidateWindowMonitor
     private let iconProvider: ApplicationIconProvider
     private let onItemAction: (DockItem) -> Void
     private let onItemContextAction: (DockItem, DockItemContextAction) -> Void
@@ -16,6 +17,7 @@ final class DisplayCoordinator {
     private var observers: [NSObjectProtocol] = []
     private var snapshot: DockSnapshot = .empty
     private var fullScreenDisplayIDs: Set<CGDirectDisplayID> = []
+    private var inputCandidateOccludedDisplayIdentities: Set<DisplayIdentity> = []
     private(set) var displays: [DisplayDescriptor] = []
     private var itemAnimationsEnabled = false
     private var snapshotPreparationGeneration: UInt64 = 0
@@ -37,6 +39,7 @@ final class DisplayCoordinator {
         preferences: PreferencesStore,
         mouseMonitor: MouseEdgeMonitor? = nil,
         fullScreenMonitor: FullScreenDisplayMonitor? = nil,
+        inputCandidateMonitor: InputCandidateWindowMonitor? = nil,
         iconProvider: ApplicationIconProvider = .shared,
         onItemAction: @escaping (DockItem) -> Void,
         onItemContextAction: @escaping (DockItem, DockItemContextAction) -> Void = { _, _ in },
@@ -47,6 +50,7 @@ final class DisplayCoordinator {
         self.preferences = preferences
         self.mouseMonitor = mouseMonitor ?? MouseEdgeMonitor()
         self.fullScreenMonitor = fullScreenMonitor ?? FullScreenDisplayMonitor()
+        self.inputCandidateMonitor = inputCandidateMonitor ?? InputCandidateWindowMonitor()
         self.iconProvider = iconProvider
         self.onItemAction = onItemAction
         self.onItemContextAction = onItemContextAction
@@ -62,6 +66,14 @@ final class DisplayCoordinator {
             self.applyFullScreenState()
         }
         fullScreenMonitor.start()
+        inputCandidateMonitor.regionsProvider = { [weak self] in
+            self?.inputCandidateAvoidanceRegions ?? []
+        }
+        inputCandidateMonitor.onOccludedDisplaysChange = { [weak self] identities in
+            guard let self else { return }
+            self.inputCandidateOccludedDisplayIdentities = identities
+            self.applyInputCandidateAvoidance()
+        }
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -96,6 +108,7 @@ final class DisplayCoordinator {
             }
         }
         rebuildPanels()
+        inputCandidateMonitor.start()
         mouseMonitor.start()
     }
 
@@ -104,6 +117,10 @@ final class DisplayCoordinator {
         pendingSnapshots.removeAll()
         isPreparingSnapshot = false
         mouseMonitor.stop()
+        inputCandidateMonitor.stop()
+        inputCandidateMonitor.regionsProvider = { [] }
+        inputCandidateMonitor.onOccludedDisplaysChange = nil
+        inputCandidateOccludedDisplayIdentities.removeAll()
         fullScreenMonitor.stop()
         fullScreenMonitor.onFullScreenDisplaysChange = nil
         fullScreenDisplayIDs.removeAll()
@@ -149,6 +166,7 @@ final class DisplayCoordinator {
                     itemAnimationsEnabled: prepared.itemAnimationsEnabled
                 )
             }
+            self.inputCandidateMonitor.refreshNow()
             self.isPreparingSnapshot = false
             self.prepareNextSnapshotIfNeeded()
         }
@@ -156,6 +174,40 @@ final class DisplayCoordinator {
 
     func setItemAnimationsEnabled(_ enabled: Bool) {
         itemAnimationsEnabled = enabled
+    }
+
+    var windowSnapRegions: [WindowEdgeSnapRegion] {
+        panels.compactMap { identity, panel in
+            guard let bodyFrame = panel.restingDockBodyFrameInScreen,
+                  let descriptor = displays.first(where: { $0.identity == identity }) else {
+                return nil
+            }
+            return WindowEdgeSnapRegion(
+                displayIdentity: identity,
+                frame: WindowEdgeSnapGeometryPolicy.accessibilityFrame(
+                    forCocoaFrame: bodyFrame,
+                    cocoaDisplayFrame: descriptor.frame,
+                    accessibilityDisplayFrame: CGDisplayBounds(descriptor.displayID)
+                )
+            )
+        }
+    }
+
+    private var inputCandidateAvoidanceRegions: [InputCandidateDockRegion] {
+        panels.compactMap { identity, panel in
+            guard let bodyFrame = panel.inputCandidateAvoidanceFrameInScreen,
+                  let descriptor = displays.first(where: { $0.identity == identity }) else {
+                return nil
+            }
+            return InputCandidateDockRegion(
+                displayIdentity: identity,
+                frame: WindowEdgeSnapGeometryPolicy.accessibilityFrame(
+                    forCocoaFrame: bodyFrame,
+                    cocoaDisplayFrame: descriptor.frame,
+                    accessibilityDisplayFrame: CGDisplayBounds(descriptor.displayID)
+                )
+            )
+        }
     }
 
     func rebuildPanels() {
@@ -202,6 +254,9 @@ final class DisplayCoordinator {
             panel.applyPreferences()
         }
 
+        applyInputCandidateAvoidance()
+        inputCandidateMonitor.refreshNow()
+
         onTopologyChange?(displays)
         NotificationCenter.default.post(name: .echoDockDisplayTopologyDidChange, object: self)
     }
@@ -217,6 +272,14 @@ final class DisplayCoordinator {
         for (identity, panel) in panels {
             guard let displayID = displayIDsByIdentity[identity] else { continue }
             panel.setFullScreenActive(fullScreenDisplayIDs.contains(displayID))
+        }
+    }
+
+    private func applyInputCandidateAvoidance() {
+        for (identity, panel) in panels {
+            panel.setInputCandidateOccluding(
+                inputCandidateOccludedDisplayIdentities.contains(identity)
+            )
         }
     }
 }

@@ -22,7 +22,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         iconProvider.startObservingApplicationLaunches()
         let modelController = DockModelController(preferences: preferences)
         let nativeDockPolicyController = NativeDockPolicyController(preferences: preferences)
-        let windowReservationService = WindowReservationService(preferences: preferences)
         let displayCoordinator = DisplayCoordinator(
             preferences: preferences,
             iconProvider: iconProvider,
@@ -37,6 +36,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onDropRequest: { [weak modelController] request in
                 modelController?.handleDrop(request) ?? false
+            }
+        )
+        let windowReservationService = WindowReservationService(
+            preferences: preferences,
+            snapRegionsProvider: { [weak displayCoordinator] in
+                displayCoordinator?.windowSnapRegions ?? []
             }
         )
         displayCoordinator.onTopologyChange = { [weak nativeDockPolicyController] _ in

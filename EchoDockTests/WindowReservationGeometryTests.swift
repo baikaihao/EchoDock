@@ -5,9 +5,9 @@ import XCTest
 final class WindowReservationGeometryTests: XCTestCase {
     private let primaryIdentity = DisplayIdentity(rawValue: "primary")
 
-    func testReservedHeightMatchesDockBodyAndBottomGap() {
-        XCTAssertEqual(WindowReservationMetrics.reservedHeight(iconSize: 48), 78)
-        XCTAssertEqual(WindowReservationMetrics.reservedHeight(iconSize: 64), 94)
+    func testReservedHeightIncludesDockBodyInsetsAndWindowGap() {
+        XCTAssertEqual(WindowReservationMetrics.reservedHeight(iconSize: 48), 79)
+        XCTAssertEqual(WindowReservationMetrics.reservedHeight(iconSize: 64), 95)
     }
 
     func testAvailableFrameReservesOnlyTheBottomStrip() {
@@ -247,6 +247,120 @@ final class WindowReservationGeometryTests: XCTestCase {
         XCTAssertEqual(
             adjustment?.targetFrame,
             CGRect(x: -1_280, y: -776, width: 1_280, height: 706)
+        )
+    }
+
+    func testMovedWindowSnapsToRightSideOfDockWithoutChangingItsSize() {
+        let dock = makeSnapRegion()
+        let window = CGRect(x: 947, y: 700, width: 400, height: 200)
+
+        let adjustment = WindowEdgeSnapGeometryPolicy.adjustment(
+            for: window,
+            interaction: .move,
+            regions: [dock]
+        )
+
+        XCTAssertEqual(
+            adjustment?.targetFrame,
+            CGRect(x: 941, y: 700, width: 400, height: 200)
+        )
+    }
+
+    func testResizedWindowSnapsItsLeftEdgeAndKeepsRightEdgeFixed() {
+        let dock = makeSnapRegion()
+        let window = CGRect(x: 947, y: 700, width: 400, height: 200)
+
+        let adjustment = WindowEdgeSnapGeometryPolicy.adjustment(
+            for: window,
+            interaction: .resize,
+            regions: [dock]
+        )
+
+        XCTAssertEqual(
+            adjustment?.targetFrame,
+            CGRect(x: 941, y: 700, width: 406, height: 200)
+        )
+    }
+
+    func testMovedWindowSnapsToLeftSideOfDock() {
+        let dock = makeSnapRegion()
+        let window = CGRect(x: 93, y: 700, width: 400, height: 200)
+
+        let adjustment = WindowEdgeSnapGeometryPolicy.adjustment(
+            for: window,
+            interaction: .move,
+            regions: [dock]
+        )
+
+        XCTAssertEqual(
+            adjustment?.targetFrame,
+            CGRect(x: 99, y: 700, width: 400, height: 200)
+        )
+    }
+
+    func testResizedWindowSnapsItsBottomEdgeAboveDock() {
+        let dock = makeSnapRegion()
+        let window = CGRect(x: 550, y: 200, width: 500, height: 615)
+
+        let adjustment = WindowEdgeSnapGeometryPolicy.adjustment(
+            for: window,
+            interaction: .resize,
+            regions: [dock]
+        )
+
+        XCTAssertEqual(
+            adjustment?.targetFrame,
+            CGRect(x: 550, y: 200, width: 500, height: 621)
+        )
+    }
+
+    func testWindowOutsideSnapDistanceOrOverlapIsNotAdjusted() {
+        let dock = makeSnapRegion()
+
+        XCTAssertNil(WindowEdgeSnapGeometryPolicy.adjustment(
+            for: CGRect(x: 970, y: 700, width: 400, height: 200),
+            interaction: .move,
+            regions: [dock]
+        ))
+        XCTAssertNil(WindowEdgeSnapGeometryPolicy.adjustment(
+            for: CGRect(x: 947, y: 100, width: 400, height: 500),
+            interaction: .move,
+            regions: [dock]
+        ))
+    }
+
+    func testDockFrameConversionUsesTheLocalDisplayCoordinateSpace() {
+        let converted = WindowEdgeSnapGeometryPolicy.accessibilityFrame(
+            forCocoaFrame: CGRect(x: 2_000, y: -894, width: 400, height: 72),
+            cocoaDisplayFrame: CGRect(x: 1_440, y: -900, width: 1_920, height: 900),
+            accessibilityDisplayFrame: CGRect(x: 1_440, y: 900, width: 1_920, height: 900)
+        )
+
+        XCTAssertEqual(
+            converted,
+            CGRect(x: 2_000, y: 1_722, width: 400, height: 72)
+        )
+    }
+
+    func testInteractiveSnapWaitsUntilEveryMouseButtonIsReleased() {
+        XCTAssertTrue(WindowEdgeSnapInteractionPolicy.shouldDeferUntilMouseRelease(
+            interaction: .move,
+            pressedMouseButtons: 1
+        ))
+        XCTAssertFalse(WindowEdgeSnapInteractionPolicy.shouldDeferUntilMouseRelease(
+            interaction: .resize,
+            pressedMouseButtons: 0
+        ))
+        XCTAssertFalse(WindowEdgeSnapInteractionPolicy.shouldDeferUntilMouseRelease(
+            interaction: nil,
+            pressedMouseButtons: 1
+        ))
+    }
+
+    private func makeSnapRegion() -> WindowEdgeSnapRegion {
+        WindowEdgeSnapRegion(
+            displayIdentity: primaryIdentity,
+            frame: CGRect(x: 500, y: 822, width: 440, height: 72)
         )
     }
 
