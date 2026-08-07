@@ -679,6 +679,14 @@ final class DockBackgroundSurfaceTests: XCTestCase {
         let liquidSurface = try XCTUnwrap(liquidSurfaces.first)
         let initialRootLayer = try XCTUnwrap(liquidSurface.layer)
         let initialBackdropLayer = try XCTUnwrap(liquidSurface.backdropLayer)
+        let bottomRightHighlight = try XCTUnwrap(
+            initialRootLayer.sublayers?.first {
+                $0.name == "echoDockIceBottomRightHighlight"
+            } as? CAGradientLayer
+        )
+        let bottomRightHighlightMask = try XCTUnwrap(
+            bottomRightHighlight.mask as? CAShapeLayer
+        )
         let initialMapLayer = try XCTUnwrap(liquidSurface.displacementMapLayer)
         let initialMap = try XCTUnwrap(liquidSurface.displacementMap)
         let initialDisplacementFilter = try XCTUnwrap(
@@ -707,6 +715,9 @@ final class DockBackgroundSurfaceTests: XCTestCase {
             NSStringFromClass(type(of: initialRootLayer)),
             "CABackdropLayer"
         )
+        XCTAssertNotNil(bottomRightHighlightMask.path)
+        XCTAssertEqual(bottomRightHighlight.colors?.count, 4)
+        XCTAssertEqual(bottomRightHighlight.locations?.count, 4)
         XCTAssertFalse(
             initialRootLayer.sublayers?.contains {
                 $0.shadowOpacity > 0

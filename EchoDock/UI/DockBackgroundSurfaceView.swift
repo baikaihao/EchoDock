@@ -853,6 +853,8 @@ final class DockLiquidGlassSurfaceView: NSView {
     private let keyHighlightMaskLayer = CAShapeLayer()
     private let fillEdgeLayer = CAGradientLayer()
     private let fillEdgeMaskLayer = CAShapeLayer()
+    private let bottomRightHighlightLayer = CAGradientLayer()
+    private let bottomRightHighlightMaskLayer = CAShapeLayer()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -961,6 +963,7 @@ final class DockLiquidGlassSurfaceView: NSView {
         rootLayer.addSublayer(faceLayer)
         rootLayer.addSublayer(keyHighlightLayer)
         rootLayer.addSublayer(fillEdgeLayer)
+        rootLayer.addSublayer(bottomRightHighlightLayer)
         installCompositorFilters()
         updateLightingAppearance()
     }
@@ -981,7 +984,9 @@ final class DockLiquidGlassSurfaceView: NSView {
             keyHighlightLayer,
             keyHighlightMaskLayer,
             fillEdgeLayer,
-            fillEdgeMaskLayer
+            fillEdgeMaskLayer,
+            bottomRightHighlightLayer,
+            bottomRightHighlightMaskLayer
         ]
         for lightingLayer in lightingLayers {
             lightingLayer.actions = Self.disabledLayerActions
@@ -1001,6 +1006,14 @@ final class DockLiquidGlassSurfaceView: NSView {
         fillEdgeLayer.mask = fillEdgeMaskLayer
         fillEdgeMaskLayer.fillColor = nil
         fillEdgeMaskLayer.strokeColor = NSColor.white.cgColor
+
+        bottomRightHighlightLayer.name = "echoDockIceBottomRightHighlight"
+        bottomRightHighlightLayer.startPoint = CGPoint(x: 0, y: 1)
+        bottomRightHighlightLayer.endPoint = CGPoint(x: 1, y: 0)
+        bottomRightHighlightLayer.mask = bottomRightHighlightMaskLayer
+        bottomRightHighlightMaskLayer.name = "echoDockIceBottomRightHighlightMask"
+        bottomRightHighlightMaskLayer.fillColor = nil
+        bottomRightHighlightMaskLayer.strokeColor = NSColor.white.cgColor
     }
 
     private func applyGeometry() {
@@ -1190,12 +1203,48 @@ final class DockLiquidGlassSurfaceView: NSView {
         fillEdgeMaskLayer.path = highlightPath
         fillEdgeMaskLayer.lineWidth = max(0.7, 1.1 / scale)
 
+        let bottomRightPath = CGMutablePath()
+        let bottomRightStartX = highlightRect.minX + highlightRect.width * 0.54
+        let bottomRightEndY = highlightRect.minY + highlightRect.height * 0.50
+        bottomRightPath.move(to: CGPoint(
+            x: bottomRightStartX,
+            y: highlightRect.minY
+        ))
+        bottomRightPath.addLine(to: CGPoint(
+            x: highlightRect.maxX - highlightRadius,
+            y: highlightRect.minY
+        ))
+        bottomRightPath.addCurve(
+            to: CGPoint(
+                x: highlightRect.maxX,
+                y: highlightRect.minY + highlightRadius
+            ),
+            control1: CGPoint(
+                x: highlightRect.maxX - highlightRadius * 0.45,
+                y: highlightRect.minY
+            ),
+            control2: CGPoint(
+                x: highlightRect.maxX,
+                y: highlightRect.minY + highlightRadius * 0.45
+            )
+        )
+        bottomRightPath.addLine(to: CGPoint(
+            x: highlightRect.maxX,
+            y: bottomRightEndY
+        ))
+        bottomRightHighlightLayer.frame = rootLayer.bounds
+        bottomRightHighlightMaskLayer.frame = rootLayer.bounds
+        bottomRightHighlightMaskLayer.path = bottomRightPath
+        bottomRightHighlightMaskLayer.lineWidth = max(0.7, 1.1 / scale)
+
         for lightingLayer in [
             faceLayer,
             keyHighlightLayer,
             keyHighlightMaskLayer,
             fillEdgeLayer,
-            fillEdgeMaskLayer
+            fillEdgeMaskLayer,
+            bottomRightHighlightLayer,
+            bottomRightHighlightMaskLayer
         ] {
             lightingLayer.contentsScale = scale
         }
@@ -1209,7 +1258,7 @@ final class DockLiquidGlassSurfaceView: NSView {
 
         keyHighlightLayer.colors = [
             NSColor.white.withAlphaComponent(
-                min(0.95, optics.keyLightAmount * 1.05 * contrastScale)
+                min(0.78, optics.keyLightAmount * 0.78 * contrastScale)
             ).cgColor,
             NSColor.white.withAlphaComponent(
                 min(0.65, optics.keyLightAmount * 0.52 * contrastScale)
@@ -1229,6 +1278,19 @@ final class DockLiquidGlassSurfaceView: NSView {
             ).cgColor
         ]
         fillEdgeLayer.locations = [0, 0.58, 1]
+
+        let bottomRightContrastScale: CGFloat = increasesContrast ? 1.25 : 1
+        let bottomRightPeak = min(
+            0.42,
+            optics.keyLightAmount * 0.42 * bottomRightContrastScale
+        )
+        bottomRightHighlightLayer.colors = [
+            NSColor.clear.cgColor,
+            NSColor.clear.cgColor,
+            NSColor.white.withAlphaComponent(bottomRightPeak * 0.42).cgColor,
+            NSColor.white.withAlphaComponent(bottomRightPeak).cgColor
+        ]
+        bottomRightHighlightLayer.locations = [0, 0.58, 0.84, 1]
     }
 }
 
