@@ -65,7 +65,8 @@ enum DockLiquidGlassMapRenderer {
             width: CGFloat(widthPixels),
             height: CGFloat(heightPixels)
         )
-        let refractionStrength = abs(optics.innerRefractionAmount) * scale
+        let topRefractionAmount = optics.innerRefractionAmount * scale
+        let inwardRefractionAmount = abs(topRefractionAmount)
         let maximumOffset = max(0.000_1, optics.maximumRefractionOffset * scale)
         let indexOfRefraction = max(1.000_1, optics.indexOfRefraction)
 
@@ -109,12 +110,15 @@ enum DockLiquidGlassMapRenderer {
                 ))
                 let normalScale = eta * incidentDotNormal + refractionRoot
                 let edgeWeight = 1 - smoothstep(0, 1, insideDepth)
+                // Opposing edges need opposing map vectors. Applying one signed
+                // vertical amount to both normals bends the top downward and the
+                // bottom upward, keeping both samples inside the Dock.
                 let offsetX = clampSigned(
-                    -normalScale * normalX * refractionStrength * edgeWeight,
+                    -normalScale * normalX * inwardRefractionAmount * edgeWeight,
                     limit: maximumOffset
                 )
                 let offsetY = clampSigned(
-                    -normalScale * normalY * refractionStrength * edgeWeight,
+                    -normalScale * normalY * topRefractionAmount * edgeWeight,
                     limit: maximumOffset
                 )
 

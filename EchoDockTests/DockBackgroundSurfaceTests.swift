@@ -225,14 +225,148 @@ final class DockBackgroundSurfaceTests: XCTestCase {
         let bottom = map.pixel(x: centerX, y: map.heightPixels - 1)
         XCTAssertGreaterThan(left.r, DockLiquidGlassDisplacementMap.neutralChannel)
         XCTAssertLessThan(right.r, DockLiquidGlassDisplacementMap.neutralChannel)
-        XCTAssertGreaterThan(top.g, DockLiquidGlassDisplacementMap.neutralChannel)
-        XCTAssertLessThan(bottom.g, DockLiquidGlassDisplacementMap.neutralChannel)
+        XCTAssertLessThan(top.g, DockLiquidGlassDisplacementMap.neutralChannel)
+        XCTAssertGreaterThan(bottom.g, DockLiquidGlassDisplacementMap.neutralChannel)
 
         let outsideCorner = map.pixel(x: 0, y: 0)
         XCTAssertEqual(outsideCorner.r, DockLiquidGlassDisplacementMap.neutralChannel)
         XCTAssertEqual(outsideCorner.g, DockLiquidGlassDisplacementMap.neutralChannel)
         XCTAssertEqual(outsideCorner.b, 0)
         XCTAssertEqual(outsideCorner.a, UInt8.max)
+    }
+
+    func testLiquidGlassMapHonorsRefractionAmountSign() throws {
+        let negativeOptics = DockLiquidGlassOptics.dock
+        let positiveOptics = DockLiquidGlassOptics(
+            captureScale: negativeOptics.captureScale,
+            sampleMargin: negativeOptics.sampleMargin,
+            innerRefractionAmount: abs(negativeOptics.innerRefractionAmount),
+            innerRefractionHeight: negativeOptics.innerRefractionHeight,
+            indexOfRefraction: negativeOptics.indexOfRefraction,
+            maximumRefractionOffset: negativeOptics.maximumRefractionOffset,
+            faceFillAlpha: negativeOptics.faceFillAlpha,
+            keyLightAmount: negativeOptics.keyLightAmount,
+            fillLightAmount: negativeOptics.fillLightAmount
+        )
+        let negativeMap = try XCTUnwrap(
+            DockLiquidGlassMapRenderer.makeMap(
+                descriptor: DockLiquidGlassMapDescriptor(
+                    bodyHeight: 72,
+                    cornerRadius: 20,
+                    backingScale: 2,
+                    optics: negativeOptics
+                )
+            )
+        )
+        let positiveMap = try XCTUnwrap(
+            DockLiquidGlassMapRenderer.makeMap(
+                descriptor: DockLiquidGlassMapDescriptor(
+                    bodyHeight: 72,
+                    cornerRadius: 20,
+                    backingScale: 2,
+                    optics: positiveOptics
+                )
+            )
+        )
+        let centerX = negativeMap.widthPixels / 2
+        let negativeTop = negativeMap.pixel(x: centerX, y: 0)
+        let negativeBottom = negativeMap.pixel(
+            x: centerX,
+            y: negativeMap.heightPixels - 1
+        )
+        let positiveTop = positiveMap.pixel(x: centerX, y: 0)
+        let positiveBottom = positiveMap.pixel(
+            x: centerX,
+            y: positiveMap.heightPixels - 1
+        )
+
+        XCTAssertLessThan(
+            negativeTop.g,
+            DockLiquidGlassDisplacementMap.neutralChannel
+        )
+        XCTAssertGreaterThan(
+            positiveTop.g,
+            DockLiquidGlassDisplacementMap.neutralChannel
+        )
+        XCTAssertGreaterThan(
+            negativeBottom.g,
+            DockLiquidGlassDisplacementMap.neutralChannel
+        )
+        XCTAssertLessThan(
+            positiveBottom.g,
+            DockLiquidGlassDisplacementMap.neutralChannel
+        )
+    }
+
+    func testLiquidGlassMapKeepsVisibleRefractionBandOnEveryEdge() throws {
+        let descriptor = DockLiquidGlassMapDescriptor(
+            bodyHeight: 72,
+            cornerRadius: 20,
+            backingScale: 2,
+            optics: .dock
+        )
+        let map = try XCTUnwrap(
+            DockLiquidGlassMapRenderer.makeMap(descriptor: descriptor)
+        )
+        let depth = max(
+            1,
+            Int((descriptor.optics.innerRefractionHeight
+                * descriptor.backingScale * 0.5).rounded())
+        )
+        let centerX = map.widthPixels / 2
+        let centerY = map.heightPixels / 2
+        let neutral = Int(DockLiquidGlassDisplacementMap.neutralChannel)
+        let minimumVisibleDelta = 16
+        for currentDepth in 0...depth {
+            let samples = [
+                map.pixel(x: currentDepth, y: centerY),
+                map.pixel(
+                    x: map.widthPixels - 1 - currentDepth,
+                    y: centerY
+                ),
+                map.pixel(x: centerX, y: currentDepth),
+                map.pixel(
+                    x: centerX,
+                    y: map.heightPixels - 1 - currentDepth
+                )
+            ]
+
+            XCTAssertGreaterThan(
+                Int(samples[0].r),
+                neutral + minimumVisibleDelta
+            )
+            XCTAssertLessThan(
+                Int(samples[1].r),
+                neutral - minimumVisibleDelta
+            )
+            XCTAssertLessThan(
+                Int(samples[2].g),
+                neutral - minimumVisibleDelta
+            )
+            XCTAssertGreaterThan(
+                Int(samples[3].g),
+                neutral + minimumVisibleDelta
+            )
+            XCTAssertEqual(
+                samples[0].g,
+                DockLiquidGlassDisplacementMap.neutralChannel
+            )
+            XCTAssertEqual(
+                samples[1].g,
+                DockLiquidGlassDisplacementMap.neutralChannel
+            )
+            XCTAssertEqual(
+                samples[2].r,
+                DockLiquidGlassDisplacementMap.neutralChannel
+            )
+            XCTAssertEqual(
+                samples[3].r,
+                DockLiquidGlassDisplacementMap.neutralChannel
+            )
+            XCTAssertTrue(
+                samples.allSatisfy { $0.b > 0 && $0.a == UInt8.max }
+            )
+        }
     }
 
     func testLiquidGlassMapKeepsVectorAlphaOpaque() throws {
@@ -296,11 +430,18 @@ final class DockBackgroundSurfaceTests: XCTestCase {
             Int((descriptor.optics.innerRefractionHeight
                 * descriptor.backingScale * 0.5).rounded())
         )
-        let sample = map.pixel(x: centerX, y: halfBandRow)
+        let topSample = map.pixel(x: centerX, y: halfBandRow)
+        let bottomSample = map.pixel(
+            x: centerX,
+            y: map.heightPixels - 1 - halfBandRow
+        )
 
-        XCTAssertEqual(sample.r, DockLiquidGlassDisplacementMap.neutralChannel)
-        XCTAssertGreaterThan(sample.g, DockLiquidGlassDisplacementMap.neutralChannel)
-        XCTAssertEqual(sample.a, UInt8.max)
+        XCTAssertEqual(topSample.r, DockLiquidGlassDisplacementMap.neutralChannel)
+        XCTAssertLessThan(topSample.g, DockLiquidGlassDisplacementMap.neutralChannel)
+        XCTAssertEqual(topSample.a, UInt8.max)
+        XCTAssertEqual(bottomSample.r, DockLiquidGlassDisplacementMap.neutralChannel)
+        XCTAssertGreaterThan(bottomSample.g, DockLiquidGlassDisplacementMap.neutralChannel)
+        XCTAssertEqual(bottomSample.a, UInt8.max)
     }
 
     func testBackgroundStylesExposeOnlySupportedTuning() {
