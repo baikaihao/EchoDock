@@ -95,13 +95,11 @@ final class RunningApplicationMonitor: NSObject, RunningApplicationMonitoring {
     }
 
     func reconcile() {
-        let ownBundleIdentifier = Bundle.main.bundleIdentifier
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let candidates = workspace.runningApplications.filter { application in
             !application.isTerminated
                 && application.processIdentifier != ownPID
                 && application.activationPolicy == .regular
-                && application.bundleIdentifier != ownBundleIdentifier
         }
 
         let sortedCandidates = candidates.sorted { lhs, rhs in

@@ -71,10 +71,12 @@ struct ApplicationIdentity: Hashable, Codable, Sendable {
     }
 
     init(bundleIdentifier: String?, applicationURL: URL?) {
-        if let bundleIdentifier, !bundleIdentifier.isEmpty {
+        if let applicationURL {
+            let canonicalPath = applicationURL.standardizedFileURL
+                .resolvingSymlinksInPath().path
+            rawValue = "url:\(canonicalPath)"
+        } else if let bundleIdentifier, !bundleIdentifier.isEmpty {
             rawValue = "bundle:\(bundleIdentifier.lowercased())"
-        } else if let applicationURL {
-            rawValue = "url:\(applicationURL.standardizedFileURL.resolvingSymlinksInPath().path)"
         } else {
             rawValue = "unknown"
         }

@@ -129,7 +129,7 @@ final class RunningApplicationActivationService {
         configuration.activates = true
         configuration.addsToRecentItems = false
         configuration.createsNewApplicationInstance = false
-        configuration.allowsRunningApplicationSubstitution = true
+        configuration.allowsRunningApplicationSubstitution = false
         configuration.appleEvent = NSAppleEventDescriptor(
             eventClass: AEEventClass(kCoreEventClass),
             eventID: AEEventID(kAEReopenApplication),
@@ -139,6 +139,14 @@ final class RunningApplicationActivationService {
             returnID: AEReturnID(kAutoGenerateReturnID),
             transactionID: AETransactionID(kAnyTransactionID)
         )
+        return configuration
+    }
+
+    static func launchConfiguration() -> NSWorkspace.OpenConfiguration {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        configuration.createsNewApplicationInstance = false
+        configuration.allowsRunningApplicationSubstitution = false
         return configuration
     }
 
@@ -756,9 +764,8 @@ final class DockModelController {
             execute: timeoutWorkItem
         )
 
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        configuration.createsNewApplicationInstance = false
+        let configuration = RunningApplicationActivationService
+            .launchConfiguration()
         workspace.openApplication(at: item.applicationURL, configuration: configuration) { [weak self] _, error in
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
