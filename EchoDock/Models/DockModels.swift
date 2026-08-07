@@ -24,6 +24,7 @@ enum DockBackgroundBlur {
 enum DockBackgroundStyle: String, CaseIterable, Sendable {
     case classic
     case liquidGlass
+    case ice
 }
 
 enum DockBackgroundStyleAvailability {
@@ -41,7 +42,14 @@ enum DockBackgroundTuningPolicy {
         selectedStyle: DockBackgroundStyle,
         reduceTransparency: Bool = false
     ) -> Bool {
-        !reduceTransparency
+        guard !reduceTransparency else { return false }
+
+        switch selectedStyle {
+        case .classic, .ice:
+            return true
+        case .liquidGlass:
+            return !supportsLiquidGlass
+        }
     }
 
     static func allowsBackgroundBlurTuning(
@@ -49,11 +57,7 @@ enum DockBackgroundTuningPolicy {
         selectedStyle: DockBackgroundStyle,
         reduceTransparency: Bool = false
     ) -> Bool {
-        allowsTransparencyTuning(
-            supportsLiquidGlass: supportsLiquidGlass,
-            selectedStyle: selectedStyle,
-            reduceTransparency: reduceTransparency
-        )
+        !reduceTransparency
             && supportsLiquidGlass
             && selectedStyle == .classic
     }

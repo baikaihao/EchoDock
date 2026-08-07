@@ -749,6 +749,23 @@
         }
       }
     },
+    "settings.appearance.backgroundStyle.ice" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ice"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "冰晶"
+          }
+        }
+      }
+    },
     "settings.appearance.backgroundStyle.liquidGlass" : {
       "extractionState" : "stale",
       "localizations" : {

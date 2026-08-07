@@ -98,8 +98,8 @@ final class PreferencesStore {
         set { set(Double(DockBackgroundTransparency.clamped(newValue)), forKey: Key.dockTransparency) }
     }
 
-    /// Normalized backdrop Gaussian radius used by the customizable classic
-    /// material. Native Liquid Glass leaves blur strength to AppKit.
+    /// Normalized backdrop Gaussian radius used by the customizable Classic
+    /// material. Liquid Glass and Ice use their own optical presets instead.
     var dockBackgroundBlur: CGFloat {
         get { DockBackgroundBlur.clamped(CGFloat(defaults.double(forKey: Key.dockBackgroundBlur))) }
         set { set(Double(DockBackgroundBlur.clamped(newValue)), forKey: Key.dockBackgroundBlur) }

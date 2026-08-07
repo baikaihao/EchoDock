@@ -11,6 +11,7 @@ enum DockBackgroundMaterial: Equatable {
     case solid
     case visualEffect
     case liquidGlass
+    case ice
 }
 
 struct DockBackgroundSurfaceConfiguration: Equatable {
@@ -22,8 +23,7 @@ struct DockBackgroundSurfaceConfiguration: Equatable {
         selectedStyle: DockBackgroundStyle,
         accessibility: DockBackgroundAccessibilityOptions
     ) -> DockBackgroundSurfaceConfiguration {
-        let usesLiquidGlass = supportsLiquidGlass && selectedStyle == .liquidGlass
-        if usesLiquidGlass {
+        if supportsLiquidGlass && selectedStyle == .liquidGlass {
             return DockBackgroundSurfaceConfiguration(
                 material: .liquidGlass,
                 increasesContrast: accessibility.increaseContrast
@@ -33,6 +33,13 @@ struct DockBackgroundSurfaceConfiguration: Equatable {
         if accessibility.reduceTransparency {
             return DockBackgroundSurfaceConfiguration(
                 material: .solid,
+                increasesContrast: accessibility.increaseContrast
+            )
+        }
+
+        if supportsLiquidGlass && selectedStyle == .ice {
+            return DockBackgroundSurfaceConfiguration(
+                material: .ice,
                 increasesContrast: accessibility.increaseContrast
             )
         }
@@ -54,7 +61,7 @@ enum DockBackgroundSurfaceLayout {
     }
 
     static func usesVisibilityMask(material: DockBackgroundMaterial) -> Bool {
-        material != .liquidGlass
+        material != .liquidGlass && material != .ice
     }
 }
 
@@ -96,6 +103,44 @@ enum DockBackgroundRim {
         guard fullVisibilityMaterialOpacity > 0 else { return 0 }
         return min(1, max(0, opacity) / fullVisibilityMaterialOpacity)
     }
+}
+
+struct DockLiquidGlassOptics: Equatable {
+    static let dock = dock(bodyHeight: 72)
+
+    static func dock(bodyHeight: CGFloat) -> DockLiquidGlassOptics {
+        let height = max(0, bodyHeight)
+        let refractionAmount = -0.42 * height
+        let maximumRefractionOffset = 0.24 * height
+        let sampleMargin = min(
+            64,
+            max(
+                32,
+                maximumRefractionOffset + 2
+            )
+        )
+        return DockLiquidGlassOptics(
+            captureScale: 1,
+            sampleMargin: sampleMargin,
+            innerRefractionAmount: refractionAmount,
+            innerRefractionHeight: 0.127 * height,
+            indexOfRefraction: 1.45,
+            maximumRefractionOffset: maximumRefractionOffset,
+            faceFillAlpha: 0.1,
+            keyLightAmount: 0.72,
+            fillLightAmount: 0.22
+        )
+    }
+
+    let captureScale: CGFloat
+    let sampleMargin: CGFloat
+    let innerRefractionAmount: CGFloat
+    let innerRefractionHeight: CGFloat
+    let indexOfRefraction: CGFloat
+    let maximumRefractionOffset: CGFloat
+    let faceFillAlpha: CGFloat
+    let keyLightAmount: CGFloat
+    let fillLightAmount: CGFloat
 }
 
 struct DockBackgroundInteractionState: Equatable {
@@ -163,6 +208,7 @@ final class DockBackgroundSurfaceView: NSView {
         layer?.addSublayer(rimLayer)
 
         liquidOuterRimLayer.fillColor = nil
+        liquidOuterRimLayer.name = "echoDockLiquidOuterRim"
         liquidOuterRimLayer.strokeColor = NSColor.white
             .withAlphaComponent(0.16).cgColor
         liquidOuterRimLayer.zPosition = -2
@@ -176,6 +222,7 @@ final class DockBackgroundSurfaceView: NSView {
             NSColor.white.withAlphaComponent(0.08).cgColor,
             NSColor.white.withAlphaComponent(0.05).cgColor
         ]
+        liquidSpecularRimLayer.name = "echoDockLiquidSpecularRim"
         liquidSpecularRimLayer.locations = [0, 0.32, 0.70, 1]
         liquidSpecularRimLayer.startPoint = CGPoint(x: 0.5, y: 1)
         liquidSpecularRimLayer.endPoint = CGPoint(x: 0.5, y: 0)
@@ -183,6 +230,7 @@ final class DockBackgroundSurfaceView: NSView {
         liquidSpecularRimLayer.isHidden = true
         liquidSpecularRimLayer.shouldRasterize = false
         liquidSpecularRimMaskLayer.fillColor = nil
+        liquidSpecularRimMaskLayer.name = "echoDockLiquidSpecularRimMask"
         liquidSpecularRimMaskLayer.strokeColor = NSColor.black.cgColor
         liquidSpecularRimMaskLayer.shouldRasterize = false
         liquidSpecularRimLayer.mask = liquidSpecularRimMaskLayer
@@ -306,7 +354,7 @@ final class DockBackgroundSurfaceView: NSView {
         let rootFrameChanged = surfaceRoot.map {
             !NSEqualRects($0.frame, targetRootFrame)
         } ?? false
-        if boundsChanged || bodyChanged || rootFrameChanged {
+        if boundsChanged || rootFrameChanged {
             surfaceRoot?.frame = targetRootFrame
             let surfaceBounds = surfaceRoot?.bounds
                 ?? NSRect(origin: .zero, size: targetRootFrame.size)
@@ -318,14 +366,25 @@ final class DockBackgroundSurfaceView: NSView {
 
         let radiusChanged = previousBodyRect.isNull
             || abs(previousBodyRect.height - bodyRect.height) > 0.000_1
-        if radiusChanged || boundsChanged {
-            if #available(macOS 26.0, *),
-               let baseGlass = baseSurface as? NSGlassEffectView {
-                baseGlass.cornerRadius = cornerRadius
-            } else {
-                baseSurface?.layer?.cornerRadius = cornerRadius
-                baseSurface?.layer?.cornerCurve = .continuous
+        if let iceSurface = baseSurface as? DockLiquidGlassSurfaceView {
+            if bodyChanged || radiusChanged || boundsChanged {
+                let localBodyRect = convert(bodyRect, to: iceSurface)
+                iceSurface.updateGeometry(
+                    bodyRect: localBodyRect,
+                    cornerRadius: cornerRadius,
+                    backingScale: window?.backingScaleFactor
+                        ?? NSScreen.main?.backingScaleFactor
+                        ?? 2
+                )
             }
+        } else if #available(macOS 26.0, *),
+                  let glass = baseSurface as? NSGlassEffectView {
+            if radiusChanged || boundsChanged {
+                glass.cornerRadius = cornerRadius
+            }
+        } else if radiusChanged || boundsChanged {
+            baseSurface?.layer?.cornerRadius = cornerRadius
+            baseSurface?.layer?.cornerCurve = .continuous
         }
 
         CATransaction.begin()
@@ -389,7 +448,7 @@ final class DockBackgroundSurfaceView: NSView {
         guard configuration != resolved else { return }
         configuration = resolved
 
-        detachContentHostFromGlass()
+        detachContentHost()
         surfaceRoot?.layer?.mask = nil
         surfaceRoot?.removeFromSuperview()
         surfaceRoot = nil
@@ -422,6 +481,11 @@ final class DockBackgroundSurfaceView: NSView {
         case .liquidGlass:
             if #available(macOS 26.0, *) {
                 installLiquidGlassSurface()
+            }
+
+        case .ice:
+            if #available(macOS 26.0, *) {
+                installIceSurface()
             }
         }
 
@@ -472,23 +536,29 @@ final class DockBackgroundSurfaceView: NSView {
 
     @available(macOS 26.0, *)
     private func installLiquidGlassSurface() {
-        let baseGlass = NSGlassEffectView()
-        baseGlass.style = .clear
-        baseGlass.tintColor = nil
-        baseGlass.clipsToBounds = false
-        baseGlass.layer?.masksToBounds = false
-        surfaceRoot = baseGlass
-        baseSurface = baseGlass
-        addSubview(baseGlass)
+        let glass = NSGlassEffectView()
+        glass.style = .clear
+        glass.tintColor = nil
+        glass.clipsToBounds = false
+        glass.layer?.masksToBounds = false
+        surfaceRoot = glass
+        baseSurface = glass
+        addSubview(glass)
     }
 
-    private func detachContentHostFromGlass() {
+    @available(macOS 26.0, *)
+    private func installIceSurface() {
+        let liquidSurface = DockLiquidGlassSurfaceView()
+        surfaceRoot = liquidSurface
+        baseSurface = liquidSurface
+        addSubview(liquidSurface)
+    }
+
+    private func detachContentHost() {
         if #available(macOS 26.0, *),
-           let glass = baseSurface as? NSGlassEffectView {
-            if glass.contentView === contentHost
-                || glass.contentView === glassContentProxy {
-                glass.contentView = nil
-            }
+           let glass = baseSurface as? NSGlassEffectView,
+           glass.contentView === glassContentProxy {
+            glass.contentView = nil
         }
         glassContentProxy.removeFromSuperview()
         contentHost.removeFromSuperview()
@@ -507,6 +577,8 @@ final class DockBackgroundSurfaceView: NSView {
                 glass.clipsToBounds = false
                 glass.layer?.masksToBounds = false
             }
+            attachContentHostAboveSurface(surfaceRoot)
+        case .ice:
             attachContentHostAboveSurface(surfaceRoot)
         case .solid, .visualEffect:
             attachContentHostAboveSurface(surfaceRoot)
@@ -606,22 +678,30 @@ final class DockBackgroundSurfaceView: NSView {
             )
 
         case .liquidGlass:
-            if #available(macOS 26.0, *) {
-                if let glass = baseSurface as? NSGlassEffectView {
-                    glass.style = .clear
-                    glass.tintColor = nil
-                    glass.alphaValue = materialOpacity
-                    glass.isHidden = false
-                }
+            if #available(macOS 26.0, *),
+               let glass = baseSurface as? NSGlassEffectView {
+                glass.style = .clear
+                glass.tintColor = nil
+                glass.alphaValue = 1
+                glass.isHidden = false
+            }
+            contentHost.alphaValue = 1
+
+        case .ice:
+            if let iceSurface = baseSurface as? DockLiquidGlassSurfaceView {
+                iceSurface.configure(
+                    materialOpacity: materialOpacity,
+                    increasesContrast: configuration.increasesContrast
+                )
+                iceSurface.isHidden = false
             }
             contentHost.alphaValue = 1
         }
 
         let rimVisibility: CGFloat
         switch configuration.material {
-        case .liquidGlass:
-            // Preserve NSGlassEffectView's dynamic refractive edge instead of
-            // covering it with a uniform CALayer border.
+        case .liquidGlass, .ice:
+            // Native glass and Ice each provide their own geometry-aware edge.
             rimVisibility = 0
         case .solid:
             rimVisibility = 1
@@ -653,6 +733,7 @@ final class DockBackgroundSurfaceView: NSView {
                 ).cgColor
             }
         }
+
     }
 
     private func updateSurfaceVisibilityMask(
@@ -731,6 +812,466 @@ final class DockBackgroundSurfaceView: NSView {
         } else {
             liquidSpecularRimMaskLayer.path = nil
         }
+    }
+
+}
+
+final class DockLiquidGlassSurfaceView: NSView {
+    private static let disabledLayerActions: [String: CAAction] = [
+        "bounds": NSNull(),
+        "position": NSNull(),
+        "path": NSNull(),
+        "contents": NSNull(),
+        "contentsCenter": NSNull(),
+        "cornerRadius": NSNull(),
+        "hidden": NSNull(),
+        "opacity": NSNull(),
+        "filters": NSNull(),
+        "sublayers": NSNull()
+    ]
+
+    private(set) var optics = DockLiquidGlassOptics.dock
+    private(set) var backdropLayer: CALayer?
+    private(set) var displacementMapLayer: CALayer?
+    private(set) var displacementMap: DockLiquidGlassDisplacementMap?
+    private(set) var displacementFilter: NSObject?
+    private(set) var isUsingCustomRenderer = false
+    private(set) var renderedCornerRadius: CGFloat = 0
+    private(set) var renderedBackingScale: CGFloat = 2
+    private(set) var renderedBodyRect: NSRect = .zero
+    private(set) var materialOpacity: CGFloat = 1
+    private(set) var mapGenerationCount = 0
+    private(set) var geometryApplicationCount = 0
+
+    private var increasesContrast = false
+    private var appliedBounds: NSRect = .null
+    private var appliedBodyRect: NSRect = .null
+    private var appliedCornerRadius: CGFloat = -1
+    private var appliedBackingScale: CGFloat = 0
+    private let faceLayer = CAShapeLayer()
+    private let keyHighlightLayer = CAGradientLayer()
+    private let keyHighlightMaskLayer = CAShapeLayer()
+    private let fillEdgeLayer = CAGradientLayer()
+    private let fillEdgeMaskLayer = CAShapeLayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        clipsToBounds = false
+        layer?.masksToBounds = false
+        layer?.actions = Self.disabledLayerActions
+        installLayerTree()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func layout() {
+        super.layout()
+        applyGeometry()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateGeometry(
+            bodyRect: renderedBodyRect,
+            cornerRadius: renderedCornerRadius,
+            backingScale: window?.backingScaleFactor
+                ?? NSScreen.main?.backingScaleFactor
+                ?? 2
+        )
+    }
+
+    func configure(
+        materialOpacity: CGFloat,
+        increasesContrast: Bool
+    ) {
+        let opacity = min(1, max(0, materialOpacity))
+        guard abs(self.materialOpacity - opacity) > 0.000_1
+                || self.increasesContrast != increasesContrast else {
+            return
+        }
+
+        self.materialOpacity = opacity
+        self.increasesContrast = increasesContrast
+        updateLightingAppearance()
+        alphaValue = opacity
+    }
+
+    func updateGeometry(
+        bodyRect: NSRect,
+        cornerRadius: CGFloat,
+        backingScale: CGFloat
+    ) {
+        let resolvedBodyRect = bodyRect.intersection(bounds)
+        let visibleBodyRect = resolvedBodyRect.isNull ? .zero : resolvedBodyRect
+        let radius = max(0, cornerRadius)
+        let scale = max(1, backingScale)
+        guard !NSEqualRects(renderedBodyRect, visibleBodyRect)
+                || abs(renderedCornerRadius - radius) > 0.000_1
+                || abs(renderedBackingScale - scale) > 0.000_1 else {
+            return
+        }
+        renderedBodyRect = visibleBodyRect
+        renderedCornerRadius = radius
+        renderedBackingScale = scale
+        applyGeometry()
+    }
+
+    private func installLayerTree() {
+        guard let rootLayer = layer else { return }
+
+        prepareLightingLayers()
+
+        let backdropLayer = DockLiquidGlassRuntime.makeBackdropLayer() ?? CALayer()
+        backdropLayer.actions = Self.disabledLayerActions
+        backdropLayer.masksToBounds = false
+        backdropLayer.backgroundColor = NSColor.white
+            .withAlphaComponent(0.001).cgColor
+        DockLiquidGlassRuntime.setProperty(
+            optics.captureScale,
+            key: "scale",
+            on: backdropLayer
+        )
+        DockLiquidGlassRuntime.setProperty(
+            optics.sampleMargin,
+            key: "marginWidth",
+            on: backdropLayer
+        )
+        DockLiquidGlassRuntime.setProperty(
+            false,
+            key: "reducesCaptureBitDepth",
+            on: backdropLayer
+        )
+        DockLiquidGlassRuntime.setProperty(
+            true,
+            key: "windowServerAware",
+            on: backdropLayer
+        )
+        rootLayer.addSublayer(backdropLayer)
+        self.backdropLayer = backdropLayer
+
+        let displacementMapLayer = makeMapLayer(
+            name: DockLiquidGlassMapRenderer.displacementSourceLayerName
+        )
+        backdropLayer.addSublayer(displacementMapLayer)
+        self.displacementMapLayer = displacementMapLayer
+
+        rootLayer.addSublayer(faceLayer)
+        rootLayer.addSublayer(keyHighlightLayer)
+        rootLayer.addSublayer(fillEdgeLayer)
+        installCompositorFilters()
+        updateLightingAppearance()
+    }
+
+    private func makeMapLayer(name: String) -> CALayer {
+        let mapLayer = CALayer()
+        mapLayer.name = name
+        mapLayer.actions = Self.disabledLayerActions
+        mapLayer.contentsGravity = .resize
+        mapLayer.minificationFilter = .linear
+        mapLayer.magnificationFilter = .linear
+        return mapLayer
+    }
+
+    private func prepareLightingLayers() {
+        let lightingLayers: [CALayer] = [
+            faceLayer,
+            keyHighlightLayer,
+            keyHighlightMaskLayer,
+            fillEdgeLayer,
+            fillEdgeMaskLayer
+        ]
+        for lightingLayer in lightingLayers {
+            lightingLayer.actions = Self.disabledLayerActions
+            lightingLayer.contentsScale = renderedBackingScale
+        }
+
+        faceLayer.fillColor = NSColor.white.withAlphaComponent(0.025).cgColor
+
+        keyHighlightLayer.startPoint = CGPoint(x: 0.05, y: 0.95)
+        keyHighlightLayer.endPoint = CGPoint(x: 0.95, y: 0.05)
+        keyHighlightLayer.mask = keyHighlightMaskLayer
+        keyHighlightMaskLayer.fillColor = nil
+        keyHighlightMaskLayer.strokeColor = NSColor.white.cgColor
+
+        fillEdgeLayer.startPoint = CGPoint(x: 0.05, y: 0.95)
+        fillEdgeLayer.endPoint = CGPoint(x: 0.95, y: 0.05)
+        fillEdgeLayer.mask = fillEdgeMaskLayer
+        fillEdgeMaskLayer.fillColor = nil
+        fillEdgeMaskLayer.strokeColor = NSColor.white.cgColor
+    }
+
+    private func applyGeometry() {
+        guard let rootLayer = layer,
+              let backdropLayer,
+              let displacementMapLayer else { return }
+        guard !NSEqualRects(appliedBounds, bounds)
+                || !NSEqualRects(appliedBodyRect, renderedBodyRect)
+                || abs(appliedCornerRadius - renderedCornerRadius) > 0.000_1
+                || abs(appliedBackingScale - renderedBackingScale) > 0.000_1 else {
+            return
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let opticsChanged = updateOpticsForCurrentHeight(on: backdropLayer)
+        applyCanvasGeometry(
+            to: backdropLayer,
+            frame: renderedBodyRect,
+            contentsScale: renderedBackingScale
+        )
+        let localBodyBounds = NSRect(
+            origin: .zero,
+            size: renderedBodyRect.size
+        )
+        applyCanvasGeometry(
+            to: displacementMapLayer,
+            frame: localBodyBounds,
+            contentsScale: renderedBackingScale
+        )
+        rebuildDisplacementMapIfNeeded()
+        if opticsChanged {
+            installCompositorFilters()
+            updateLightingAppearance()
+        }
+        updateLightingGeometry(rootLayer: rootLayer)
+        CATransaction.commit()
+        appliedBounds = bounds
+        appliedBodyRect = renderedBodyRect
+        appliedCornerRadius = renderedCornerRadius
+        appliedBackingScale = renderedBackingScale
+        geometryApplicationCount += 1
+    }
+
+    private func applyCanvasGeometry(
+        to layer: CALayer?,
+        frame: NSRect?,
+        contentsScale: CGFloat
+    ) {
+        guard let layer else { return }
+        if let frame, !NSEqualRects(layer.frame, frame) {
+            layer.frame = frame
+        }
+        if layer.contentsScale != contentsScale {
+            layer.contentsScale = contentsScale
+        }
+    }
+
+    @discardableResult
+    private func updateOpticsForCurrentHeight(on backdropLayer: CALayer) -> Bool {
+        guard renderedBodyRect.height > 0 else { return false }
+        let resolved = DockLiquidGlassOptics.dock(
+            bodyHeight: renderedBodyRect.height
+        )
+        guard resolved != optics else { return false }
+        optics = resolved
+
+        DockLiquidGlassRuntime.setProperty(
+            resolved.captureScale,
+            key: "scale",
+            on: backdropLayer
+        )
+        DockLiquidGlassRuntime.setProperty(
+            resolved.sampleMargin,
+            key: "marginWidth",
+            on: backdropLayer
+        )
+        return true
+    }
+
+    private func rebuildDisplacementMapIfNeeded() {
+        guard renderedBodyRect.height > 0,
+              let displacementMapLayer else { return }
+        let descriptor = DockLiquidGlassMapDescriptor(
+            bodyHeight: renderedBodyRect.height,
+            cornerRadius: renderedCornerRadius,
+            backingScale: renderedBackingScale,
+            optics: optics
+        )
+        guard displacementMap?.descriptor != descriptor,
+              let map = DockLiquidGlassMapRenderer.makeMap(
+                  descriptor: descriptor
+              ) else {
+            return
+        }
+        displacementMap = map
+        mapGenerationCount += 1
+        displacementMapLayer.contents = map.image
+        displacementMapLayer.contentsCenter = map.contentsCenter
+    }
+
+    private func installCompositorFilters() {
+        guard let backdropLayer,
+              DockLiquidGlassRuntime.isBackdropLayer(backdropLayer),
+              let displacement = DockLiquidGlassRuntime.makeFilter(
+                  type: "displacementMap",
+                  name: "echoDockDisplacement"
+              ) else {
+            installFallbackRenderer()
+            return
+        }
+        let requiredInputs: Set<String> = [
+            "inputAmount",
+            "inputOffset",
+            "inputSourceSublayerName"
+        ]
+        guard DockLiquidGlassRuntime.filter(
+                  displacement,
+                  supports: requiredInputs
+              ) else {
+            installFallbackRenderer()
+            return
+        }
+
+        let offset = NSValue(point: NSPoint(x: 0.5, y: 0.5))
+        displacement.setValue(
+            NSNumber(value: Double(optics.maximumRefractionOffset * 2)),
+            forKey: "inputAmount"
+        )
+        displacement.setValue(offset, forKey: "inputOffset")
+        displacement.setValue(
+            DockLiquidGlassMapRenderer.displacementSourceLayerName,
+            forKey: "inputSourceSublayerName"
+        )
+
+        backdropLayer.filters = [displacement]
+        guard backdropLayer.filters?.count == 1 else {
+            installFallbackRenderer()
+            return
+        }
+        backdropLayer.backgroundColor = NSColor.white
+            .withAlphaComponent(0.001).cgColor
+        displacementMapLayer?.isHidden = false
+        displacementFilter = displacement
+        isUsingCustomRenderer = true
+    }
+
+    private func installFallbackRenderer() {
+        backdropLayer?.filters = nil
+        backdropLayer?.backgroundColor = NSColor.white
+            .withAlphaComponent(optics.faceFillAlpha).cgColor
+        displacementMapLayer?.isHidden = true
+        displacementFilter = nil
+        isUsingCustomRenderer = false
+    }
+
+    private func updateLightingGeometry(rootLayer: CALayer) {
+        let scale = max(1, renderedBackingScale)
+        let lineInset = 0.5 / scale
+        let bodyPath = CGPath(
+            roundedRect: renderedBodyRect,
+            cornerWidth: renderedCornerRadius,
+            cornerHeight: renderedCornerRadius,
+            transform: nil
+        )
+        let highlightRect = renderedBodyRect.insetBy(
+            dx: lineInset,
+            dy: lineInset
+        )
+        let highlightRadius = max(0, renderedCornerRadius - lineInset)
+        let highlightPath = CGPath(
+            roundedRect: highlightRect,
+            cornerWidth: highlightRadius,
+            cornerHeight: highlightRadius,
+            transform: nil
+        )
+
+        faceLayer.frame = rootLayer.bounds
+        faceLayer.path = bodyPath
+
+        keyHighlightLayer.frame = rootLayer.bounds
+        keyHighlightMaskLayer.frame = rootLayer.bounds
+        keyHighlightMaskLayer.path = highlightPath
+        keyHighlightMaskLayer.lineWidth = max(0.7, 1.15 / scale)
+
+        fillEdgeLayer.frame = rootLayer.bounds
+        fillEdgeMaskLayer.frame = rootLayer.bounds
+        fillEdgeMaskLayer.path = highlightPath
+        fillEdgeMaskLayer.lineWidth = max(0.7, 1.1 / scale)
+
+        for lightingLayer in [
+            faceLayer,
+            keyHighlightLayer,
+            keyHighlightMaskLayer,
+            fillEdgeLayer,
+            fillEdgeMaskLayer
+        ] {
+            lightingLayer.contentsScale = scale
+        }
+    }
+
+    private func updateLightingAppearance() {
+        let contrastScale: CGFloat = increasesContrast ? 1.35 : 1
+        let faceAlpha = min(0.12, optics.faceFillAlpha * 0.24 * contrastScale)
+        faceLayer.fillColor = NSColor.white
+            .withAlphaComponent(faceAlpha).cgColor
+
+        keyHighlightLayer.colors = [
+            NSColor.white.withAlphaComponent(
+                min(0.95, optics.keyLightAmount * 1.05 * contrastScale)
+            ).cgColor,
+            NSColor.white.withAlphaComponent(
+                min(0.65, optics.keyLightAmount * 0.52 * contrastScale)
+            ).cgColor,
+            NSColor.white.withAlphaComponent(0.04).cgColor,
+            NSColor.white.withAlphaComponent(
+                min(0.50, optics.keyLightAmount * 0.32 * contrastScale)
+            ).cgColor
+        ]
+        keyHighlightLayer.locations = [0, 0.28, 0.67, 1]
+
+        fillEdgeLayer.colors = [
+            NSColor.clear.cgColor,
+            NSColor.clear.cgColor,
+            NSColor.black.withAlphaComponent(
+                min(0.30, optics.fillLightAmount * 0.62 * contrastScale)
+            ).cgColor
+        ]
+        fillEdgeLayer.locations = [0, 0.58, 1]
+    }
+}
+
+private enum DockLiquidGlassRuntime {
+    static func makeBackdropLayer() -> CALayer? {
+        DockGaussianBackdropRuntime.makeBehindWindowLayer()
+    }
+
+    static func isBackdropLayer(_ layer: CALayer) -> Bool {
+        DockGaussianBackdropRuntime.isBackdropLayer(layer)
+    }
+
+    static func makeFilter(type: String, name: String) -> NSObject? {
+        guard let filterClass = NSClassFromString("CAFilter") as? NSObject.Type,
+              let unmanagedFilter = filterClass.perform(
+                  NSSelectorFromString("filterWithType:"),
+                  with: type
+              ),
+              let filter = unmanagedFilter.takeUnretainedValue()
+                as? NSObject else {
+            return nil
+        }
+        filter.setValue(name, forKey: "name")
+        return filter
+    }
+
+    static func filter(
+        _ filter: NSObject,
+        supports requiredInputs: Set<String>
+    ) -> Bool {
+        let availableInputs = Set(
+            filter.value(forKey: "inputKeys") as? [String] ?? []
+        )
+        return requiredInputs.isSubset(of: availableInputs)
+    }
+
+    static func setProperty(_ value: Any, key: String, on object: NSObject) {
+        let setterName = "set"
+            + key.prefix(1).uppercased()
+            + String(key.dropFirst())
+            + ":"
+        guard object.responds(to: NSSelectorFromString(setterName)) else { return }
+        object.setValue(value, forKey: key)
     }
 }
 

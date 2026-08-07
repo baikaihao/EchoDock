@@ -2,6 +2,15 @@ import AppKit
 
 @MainActor
 final class AppearanceSettingsViewController: NSViewController {
+    private static let backgroundStyleOptions: [(
+        style: DockBackgroundStyle,
+        localizationKey: String
+    )] = [
+        (.classic, "settings.appearance.backgroundStyle.classic"),
+        (.liquidGlass, "settings.appearance.backgroundStyle.liquidGlass"),
+        (.ice, "settings.appearance.backgroundStyle.ice")
+    ]
+
     private let preferences: PreferencesStore
     private let supportsBackgroundStyleSelection: Bool
 
@@ -98,7 +107,8 @@ final class AppearanceSettingsViewController: NSViewController {
             "format.percent.zeroDecimals",
             preferences.dockBackgroundBlur * 100
         )
-        backgroundStyleControl.selectedSegment = preferences.dockBackgroundStyle == .classic ? 0 : 1
+        backgroundStyleControl.selectedSegment = Self.backgroundStyleOptions
+            .firstIndex { $0.style == preferences.dockBackgroundStyle } ?? 0
         let allowsTransparencyTuning = DockBackgroundTuningPolicy.allowsTransparencyTuning(
             supportsLiquidGlass: supportsBackgroundStyleSelection,
             selectedStyle: preferences.dockBackgroundStyle,
@@ -158,15 +168,13 @@ final class AppearanceSettingsViewController: NSViewController {
             action: #selector(backgroundBlurChanged)
         )
 
-        backgroundStyleControl.segmentCount = 2
-        backgroundStyleControl.setLabel(
-            L10n.text("settings.appearance.backgroundStyle.classic"),
-            forSegment: 0
-        )
-        backgroundStyleControl.setLabel(
-            L10n.text("settings.appearance.backgroundStyle.liquidGlass"),
-            forSegment: 1
-        )
+        backgroundStyleControl.segmentCount = Self.backgroundStyleOptions.count
+        for (index, option) in Self.backgroundStyleOptions.enumerated() {
+            backgroundStyleControl.setLabel(
+                L10n.text(option.localizationKey),
+                forSegment: index
+            )
+        }
         backgroundStyleControl.trackingMode = .selectOne
         backgroundStyleControl.segmentStyle = .rounded
         backgroundStyleControl.target = self
@@ -398,9 +406,13 @@ final class AppearanceSettingsViewController: NSViewController {
     }
 
     @objc private func backgroundStyleChanged(_ sender: NSSegmentedControl) {
-        preferences.dockBackgroundStyle = sender.selectedSegment == 0
-            ? .classic
-            : .liquidGlass
+        guard Self.backgroundStyleOptions.indices.contains(sender.selectedSegment) else {
+            refresh()
+            return
+        }
+        preferences.dockBackgroundStyle = Self.backgroundStyleOptions[
+            sender.selectedSegment
+        ].style
         refresh()
     }
 

@@ -229,7 +229,7 @@ final class InputCandidateWindowMonitor: NSObject {
             isRefreshInFlight = false
         }
         guard !regions.isEmpty else {
-            accept([])
+            acceptOccludedDisplays([])
             return
         }
         guard !isRefreshInFlight else { return }
@@ -255,17 +255,17 @@ final class InputCandidateWindowMonitor: NSObject {
 
                 let latestRegions = self.currentRegions()
                 self.requestedRegions = latestRegions
-                let next = InputCandidateAvoidancePolicy.occludedDisplayIdentities(
+                let nextOccluded = InputCandidateAvoidancePolicy.occludedDisplayIdentities(
                     regions: latestRegions,
                     windows: windows,
                     excludingProcessIdentifier: currentProcessIdentifier
                 )
-                self.accept(next)
+                self.acceptOccludedDisplays(nextOccluded)
             }
         }
     }
 
-    private func accept(_ next: Set<DisplayIdentity>) {
+    private func acceptOccludedDisplays(_ next: Set<DisplayIdentity>) {
         guard let accepted = debouncer.accept(next) else { return }
         onOccludedDisplaysChange?(accepted)
     }
