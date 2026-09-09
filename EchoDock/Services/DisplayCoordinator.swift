@@ -97,15 +97,12 @@ final class DisplayCoordinator {
         })
 
         mouseMonitor.onSample = { [weak self] location, pressedButtons, now, isFileDrag in
-            guard let self else { return }
-            for panel in self.panels.values {
-                panel.processMouse(
-                    location: location,
-                    pressedButtons: pressedButtons,
-                    now: now,
-                    isFileDrag: isFileDrag
-                )
-            }
+            self?.processMouse(
+                location: location,
+                pressedButtons: pressedButtons,
+                now: now,
+                isFileDrag: isFileDrag
+            )
         }
         rebuildPanels()
         inputCandidateMonitor.start()
@@ -174,6 +171,22 @@ final class DisplayCoordinator {
 
     func setItemAnimationsEnabled(_ enabled: Bool) {
         itemAnimationsEnabled = enabled
+    }
+
+    func processMouse(
+        location: CGPoint,
+        pressedButtons: Int,
+        now: Date = Date(),
+        isFileDrag: Bool = false
+    ) {
+        for panel in panels.values {
+            panel.processMouse(
+                location: location,
+                pressedButtons: pressedButtons,
+                now: now,
+                isFileDrag: isFileDrag
+            )
+        }
     }
 
     var windowSnapRegions: [WindowEdgeSnapRegion] {

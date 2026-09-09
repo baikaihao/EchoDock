@@ -15,5 +15,5 @@ build/
 *.dSYM.zip
 
 # Swift Package Manager
-.build/
+.build*/
 .swiftpm/xcode/package.xcworkspace/xcuserdata/

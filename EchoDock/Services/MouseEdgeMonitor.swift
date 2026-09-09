@@ -4,53 +4,65 @@ import AppKit
 final class MouseEdgeMonitor: NSObject {
     var onSample: ((CGPoint, Int, Date, Bool) -> Void)?
 
-    private var timer: Timer?
     private var globalMovementMonitor: Any?
     private var localMovementMonitor: Any?
     private var dragPasteboardChangeCount = -1
     private var dragPasteboardContainsFiles = false
+    private var pendingDragSample: PointerSample?
     private var isDragSampleScheduled = false
+    private var isRunning = false
+
+    private struct PointerSample {
+        let location: CGPoint
+        let pressedButtons: Int
+        let date: Date
+    }
+
+    private static let monitoredEvents: NSEvent.EventTypeMask = [
+        .mouseMoved,
+        .leftMouseDragged,
+        .rightMouseDragged,
+        .otherMouseDragged,
+        .leftMouseUp,
+        .rightMouseUp,
+        .otherMouseUp
+    ]
 
     func start() {
-        guard timer == nil else { return }
-        let timer = Timer(
-            timeInterval: 0.05,
-            target: self,
-            selector: #selector(sampleMouse),
-            userInfo: nil,
-            repeats: true
-        )
-        RunLoop.main.add(timer, forMode: .common)
-        self.timer = timer
+        guard !isRunning else { return }
+        isRunning = true
 
         globalMovementMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
-        ) { [weak self] _ in
-            // AppKit invokes event-monitor handlers on the main thread. Merge
-            // high-frequency drag callbacks before touching the drag pasteboard.
+            matching: Self.monitoredEvents
+        ) { [weak self] event in
             MainActor.assumeIsolated {
-                self?.scheduleDragMovementSample()
+                self?.handle(event)
             }
         }
         localMovementMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+            matching: Self.monitoredEvents
         ) { [weak self] event in
             MainActor.assumeIsolated {
-                self?.scheduleDragMovementSample()
+                self?.handle(event)
             }
             return event
         }
+
+        publishSample(
+            isFileDrag: isFileDragInProgress(
+                pressedButtons: NSEvent.pressedMouseButtons
+            )
+        )
     }
 
     func stop() {
-        timer?.invalidate()
-        timer = nil
+        isRunning = false
+        pendingDragSample = nil
         isDragSampleScheduled = false
-        removeMovementMonitors()
+        removeEventMonitors()
     }
 
     deinit {
-        timer?.invalidate()
         if let globalMovementMonitor {
             NSEvent.removeMonitor(globalMovementMonitor)
         }
@@ -59,21 +71,50 @@ final class MouseEdgeMonitor: NSObject {
         }
     }
 
-    @objc private func sampleMouse() {
-        publishSample(isFileDrag: isFileDragInProgress)
+    private func handle(_ event: NSEvent) {
+        guard isRunning else { return }
+        let sample = PointerSample(
+            location: event.cgEvent?.unflippedLocation ?? NSEvent.mouseLocation,
+            pressedButtons: NSEvent.pressedMouseButtons,
+            date: Date()
+        )
+        switch event.type {
+        case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+            // Drag pasteboard reads are more expensive than pointer delivery.
+            // Merge only drag samples into the next main-run-loop turn.
+            scheduleDragMovementSample(sample)
+        default:
+            publishSample(
+                sample,
+                isFileDrag: isFileDragInProgress(
+                    pressedButtons: sample.pressedButtons
+                )
+            )
+        }
     }
 
     private func publishSample(isFileDrag: Bool) {
+        publishSample(
+            PointerSample(
+                location: NSEvent.mouseLocation,
+                pressedButtons: NSEvent.pressedMouseButtons,
+                date: Date()
+            ),
+            isFileDrag: isFileDrag
+        )
+    }
+
+    private func publishSample(_ sample: PointerSample, isFileDrag: Bool) {
         onSample?(
-            NSEvent.mouseLocation,
-            NSEvent.pressedMouseButtons,
-            Date(),
+            sample.location,
+            sample.pressedButtons,
+            sample.date,
             isFileDrag
         )
     }
 
-    private var isFileDragInProgress: Bool {
-        guard NSEvent.pressedMouseButtons != 0 else {
+    private func isFileDragInProgress(pressedButtons: Int) -> Bool {
+        guard pressedButtons != 0 else {
             dragPasteboardChangeCount = -1
             dragPasteboardContainsFiles = false
             return false
@@ -90,23 +131,29 @@ final class MouseEdgeMonitor: NSObject {
     }
 
     private func sampleDragMovement() {
-        let isFileDrag = isFileDragInProgress
-        guard isFileDrag else { return }
-        publishSample(isFileDrag: isFileDrag)
+        guard let sample = pendingDragSample else { return }
+        pendingDragSample = nil
+        publishSample(
+            sample,
+            isFileDrag: isFileDragInProgress(
+                pressedButtons: sample.pressedButtons
+            )
+        )
     }
 
-    private func scheduleDragMovementSample() {
+    private func scheduleDragMovementSample(_ sample: PointerSample) {
+        pendingDragSample = sample
         guard !isDragSampleScheduled else { return }
         isDragSampleScheduled = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.isDragSampleScheduled = false
-            guard self.timer != nil else { return }
+            guard self.isRunning else { return }
             self.sampleDragMovement()
         }
     }
 
-    private func removeMovementMonitors() {
+    private func removeEventMonitors() {
         if let globalMovementMonitor {
             NSEvent.removeMonitor(globalMovementMonitor)
             self.globalMovementMonitor = nil

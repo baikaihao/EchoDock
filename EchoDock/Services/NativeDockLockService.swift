@@ -28,10 +28,26 @@ enum NativeDockLockEdge: String, Equatable {
 enum NativeDockEventPolicy {
     static func canBeBlocked(
         _ eventType: CGEventType,
-        pressedMouseButtons: Int = 0
+        pressedMouseButtons _: Int = 0
     ) -> Bool {
-        eventType == .mouseMoved
-            && pressedMouseButtons == 0
+        switch eventType {
+        case .mouseMoved,
+             .leftMouseDragged,
+             .rightMouseDragged,
+             .otherMouseDragged:
+            return true
+        default:
+            return false
+        }
+    }
+
+    static func preservesDraggingDelivery(_ eventType: CGEventType) -> Bool {
+        switch eventType {
+        case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -204,10 +220,57 @@ enum NativeDockLockGeometry {
         edge: NativeDockLockEdge,
         depth: CGFloat = 10
     ) -> Bool {
-        displays.contains { display in
+        protectedDisplay(
+            at: point,
+            displays: displays,
+            targetDisplayID: targetDisplayID,
+            edge: edge,
+            depth: depth
+        ) != nil
+    }
+
+    static func constrainedPoint(
+        for point: CGPoint,
+        displays: [NativeDockLockDisplayGeometry],
+        targetDisplayID: CGDirectDisplayID,
+        edge: NativeDockLockEdge,
+        depth: CGFloat = 10,
+        clearance: CGFloat = 1
+    ) -> CGPoint? {
+        guard let display = protectedDisplay(
+            at: point,
+            displays: displays,
+            targetDisplayID: targetDisplayID,
+            edge: edge,
+            depth: depth
+        ) else { return nil }
+
+        let zone = triggerZone(for: display.frame, edge: edge, depth: depth)
+        let clearance = max(0.5, clearance)
+        switch edge {
+        case .bottom:
+            return CGPoint(x: point.x, y: zone.minY - clearance)
+        case .left:
+            return CGPoint(x: zone.maxX + clearance, y: point.y)
+        case .right:
+            return CGPoint(x: zone.minX - clearance, y: point.y)
+        }
+    }
+
+    private static func protectedDisplay(
+        at point: CGPoint,
+        displays: [NativeDockLockDisplayGeometry],
+        targetDisplayID: CGDirectDisplayID,
+        edge: NativeDockLockEdge,
+        depth: CGFloat
+    ) -> NativeDockLockDisplayGeometry? {
+        displays.first { display in
             guard display.displayID != targetDisplayID,
                   !display.isMirrorSecondary else { return false }
-            guard triggerZone(for: display.frame, edge: edge, depth: depth).contains(point) else {
+            guard containsInclusive(
+                triggerZone(for: display.frame, edge: edge, depth: depth),
+                point
+            ) else {
                 return false
             }
 
@@ -216,6 +279,15 @@ enum NativeDockLockGeometry {
                 $0.contains(coordinate)
             }
         }
+    }
+
+    private static func containsInclusive(_ rect: CGRect, _ point: CGPoint) -> Bool {
+        rect.width > 0
+            && rect.height > 0
+            && point.x >= rect.minX
+            && point.x <= rect.maxX
+            && point.y >= rect.minY
+            && point.y <= rect.maxY
     }
 
     /// Returns the portions of a display edge that are physically exposed.
@@ -411,6 +483,7 @@ final class NativeDockLockService {
     }
 
     var onStatusChange: ((NativeDockLockStatus) -> Void)?
+    var onProtectedEdgePointerMotion: (@MainActor (CGPoint, Int) -> Void)?
 
     private var observers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
     private var dockPreferenceObserver: NSObjectProtocol?
@@ -425,6 +498,8 @@ final class NativeDockLockService {
     private var edge: NativeDockLockEdge = .bottom
     private var relocationGeneration = 0
     private var relocationSavedPosition: CGPoint?
+    private var pendingProtectedEdgePointerMotion: (location: CGPoint, pressedButtons: Int)?
+    private var isProtectedEdgePointerMotionScheduled = false
     private var promptIssued = false
     private let syntheticEventMarker: Int64 = 0x4D554C5449444F43 // "MULTIDOC"
 
@@ -482,14 +557,13 @@ final class NativeDockLockService {
         targetDisplayID: CGDirectDisplayID?,
         displays: [DisplayDescriptor]
     ) {
-        let geometry = displays.map {
+        let geometry = displays.map { descriptor in
             NativeDockLockDisplayGeometry(
-                displayID: $0.displayID,
+                displayID: descriptor.displayID,
                 // CGEvent locations and CGDisplayBounds share the global
-                // Core Graphics coordinate space. DisplayDescriptor.frame is
-                // an AppKit frame and may use the opposite Y origin.
-                frame: CGDisplayBounds($0.displayID),
-                isMirrorSecondary: $0.isMirrorSecondary
+                // Core Graphics coordinate space.
+                frame: CGDisplayBounds(descriptor.displayID),
+                isMirrorSecondary: descriptor.isMirrorSecondary
             )
         }
         configure(
@@ -591,6 +665,7 @@ final class NativeDockLockService {
         isEnabled = false
         targetDisplayID = nil
         displays.removeAll()
+        pendingProtectedEdgePointerMotion = nil
         stopPermissionTimer()
         stopEventTap()
         cancelRelocation()
@@ -750,6 +825,9 @@ final class NativeDockLockService {
         guard isEnabled, eventTap == nil, AXIsProcessTrusted() else { return }
 
         let eventMask = (CGEventMask(1) << CGEventType.mouseMoved.rawValue)
+            | (CGEventMask(1) << CGEventType.leftMouseDragged.rawValue)
+            | (CGEventMask(1) << CGEventType.rightMouseDragged.rawValue)
+            | (CGEventMask(1) << CGEventType.otherMouseDragged.rawValue)
             | (CGEventMask(1) << CGEventType.tapDisabledByTimeout.rawValue)
             | (CGEventMask(1) << CGEventType.tapDisabledByUserInput.rawValue)
 
@@ -799,9 +877,10 @@ final class NativeDockLockService {
             return Unmanaged.passUnretained(event)
         }
 
+        let pressedMouseButtons = NSEvent.pressedMouseButtons
         guard NativeDockEventPolicy.canBeBlocked(
             eventType,
-            pressedMouseButtons: NSEvent.pressedMouseButtons
+            pressedMouseButtons: pressedMouseButtons
         ) else {
             return Unmanaged.passUnretained(event)
         }
@@ -819,15 +898,58 @@ final class NativeDockLockService {
             return Unmanaged.passUnretained(event)
         }
 
-        if NativeDockLockGeometry.shouldBlock(
-            point: event.location,
+        let quartzLocation = event.location
+        guard NativeDockLockGeometry.shouldBlock(
+            point: quartzLocation,
             displays: displays,
             targetDisplayID: targetDisplayID,
             edge: edge
-        ) {
-            return nil
+        ) else {
+            return Unmanaged.passUnretained(event)
         }
-        return Unmanaged.passUnretained(event)
+
+        // A blocked session-tap event never reaches AppKit's global monitor.
+        // unflippedLocation uses the same main-display lower-left origin as
+        // AppKit global screen coordinates. NSEvent.mouseLocation is racy here
+        // because AppKit has not published this event yet.
+        enqueueProtectedEdgePointerMotion(
+            location: event.unflippedLocation,
+            pressedButtons: pressedMouseButtons
+        )
+
+        if NativeDockEventPolicy.preservesDraggingDelivery(eventType),
+           let constrainedPoint = NativeDockLockGeometry.constrainedPoint(
+               for: quartzLocation,
+               displays: displays,
+               targetDisplayID: targetDisplayID,
+               edge: edge
+           ) {
+            event.location = constrainedPoint
+            return Unmanaged.passUnretained(event)
+        }
+        return nil
+    }
+
+    private func enqueueProtectedEdgePointerMotion(
+        location: CGPoint,
+        pressedButtons: Int
+    ) {
+        pendingProtectedEdgePointerMotion = (location, pressedButtons)
+        guard !isProtectedEdgePointerMotionScheduled else { return }
+        isProtectedEdgePointerMotionScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let sample = self.pendingProtectedEdgePointerMotion
+            self.pendingProtectedEdgePointerMotion = nil
+            self.isProtectedEdgePointerMotionScheduled = false
+            guard self.isRunning, self.isEnabled, let sample else { return }
+            MainActor.assumeIsolated {
+                self.onProtectedEdgePointerMotion?(
+                    sample.location,
+                    sample.pressedButtons
+                )
+            }
+        }
     }
 
     private func scheduleRelocation(after delay: TimeInterval) {

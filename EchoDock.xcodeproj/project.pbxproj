@@ -323,6 +323,7 @@
 				CURRENT_PROJECT_VERSION = 20260803;
 				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
+				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = "EchoDock-Info.plist";
@@ -331,6 +332,10 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.0.4;
+				OTHER_CODE_SIGN_FLAGS = (
+					"--requirements",
+					"$(SRCROOT)/EchoDock.debug.requirements",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.baikaihao.EchoDock;
 				PRODUCT_MODULE_NAME = EchoDock;
 				PRODUCT_NAME = EchoDock;

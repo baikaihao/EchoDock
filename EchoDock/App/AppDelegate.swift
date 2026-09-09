@@ -47,6 +47,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         displayCoordinator.onTopologyChange = { [weak nativeDockPolicyController] _ in
             nativeDockPolicyController?.reconcile()
         }
+        nativeDockPolicyController.onProtectedEdgePointerMotion = {
+            [weak displayCoordinator] location, pressedButtons in
+            displayCoordinator?.processMouse(
+                location: location,
+                pressedButtons: pressedButtons
+            )
+        }
 
         let settingsWindowController = SettingsWindowController(
             preferences: preferences,

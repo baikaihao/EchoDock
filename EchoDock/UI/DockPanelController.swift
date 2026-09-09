@@ -151,6 +151,77 @@ enum DockSampledPointerEntryPolicy {
     }
 }
 
+enum DockBottomInteractionGeometry {
+    static let defaultEdgeDepth: CGFloat = 3
+
+    static func normalizedLocation(
+        _ location: CGPoint,
+        displayFrame: CGRect,
+        panelFrame: CGRect
+    ) -> CGPoint {
+        // The system Dock owns the whole physical edge, not only the span of
+        // its icons. Project the gap below EchoDock into the panel's bottom
+        // interaction row for every x coordinate on this display.
+        guard location.x >= displayFrame.minX,
+              location.x <= displayFrame.maxX,
+              location.y >= displayFrame.minY,
+              location.y < panelFrame.minY else {
+            return location
+        }
+        return CGPoint(x: location.x, y: panelFrame.minY)
+    }
+
+    static func bottomEdgeHotZone(
+        for displayFrame: CGRect,
+        depth: CGFloat = defaultEdgeDepth
+    ) -> CGRect {
+        let clampedDepth = min(
+            max(0, depth),
+            max(0, displayFrame.height)
+        )
+        return CGRect(
+            x: displayFrame.minX,
+            y: displayFrame.minY,
+            width: displayFrame.width,
+            height: clampedDepth
+        )
+    }
+
+    static func containsBottomEdgeHotZone(
+        _ location: CGPoint,
+        displayFrame: CGRect,
+        depth: CGFloat = defaultEdgeDepth
+    ) -> Bool {
+        let zone = bottomEdgeHotZone(for: displayFrame, depth: depth)
+        return location.x >= zone.minX
+            && location.x <= zone.maxX
+            && location.y >= zone.minY
+            && location.y <= zone.maxY
+    }
+
+    static func visibleHoldRegion(
+        panelFrame: CGRect,
+        displayFrame: CGRect,
+        margin: CGFloat = 8
+    ) -> CGRect {
+        // Once revealed, keep the panel alive while the pointer tracks along
+        // the same physical bottom edge. This mirrors the system Dock's edge
+        // hysteresis and prevents a horizontal sweep from hiding/revealing it
+        // between icon slots.
+        let bottom = displayFrame.minY
+        let top = min(
+            displayFrame.maxY,
+            max(bottom, panelFrame.maxY + margin)
+        )
+        return CGRect(
+            x: displayFrame.minX,
+            y: bottom,
+            width: displayFrame.width,
+            height: top - bottom
+        )
+    }
+}
+
 @MainActor
 final class DockPanelController {
     let displayIdentity: DisplayIdentity
@@ -165,6 +236,8 @@ final class DockPanelController {
     private var snapshot: DockSnapshot = .empty
     private var hotZoneEnteredAt: Date?
     private var mouseLeftAt: Date?
+    private var hotZoneRevealTimer: Timer?
+    private var hideTimer: Timer?
     private var isContextMenuPresented = false
     private var isFileDragDestinationActive = false
     private var isFileDragCaptureActive = false
@@ -177,6 +250,10 @@ final class DockPanelController {
     private var isFullScreenActive = false
     private var isInputCandidateOccluding = false
     private var cachedInputCandidateAvoidanceFrameInScreen: NSRect?
+    // The session event tap can consume the event before AppKit updates
+    // NSEvent.mouseLocation. Keep the last delivered sample for delayed edge
+    // decisions so a stationary pointer remains at the edge it entered.
+    private var latestPointerSample: (location: CGPoint, pressedButtons: Int)?
 
     private var presentationMode: DockPanelPresentationMode {
         DockPanelPresentationPolicy.mode(
@@ -245,7 +322,7 @@ final class DockPanelController {
         contentView.onContextMenuPresentationChange = { [weak self] presented in
             guard let self else { return }
             self.isContextMenuPresented = presented
-            self.mouseLeftAt = nil
+            self.resetHideTracking()
             if presented {
                 self.tooltipPanelController.hide()
             }
@@ -267,7 +344,7 @@ final class DockPanelController {
             self.isLaunchBounceActive = isActive
             // A launch hop is a fixed sequence. Restart the normal hide-delay
             // countdown only after the content view reports that it finished.
-            self.mouseLeftAt = nil
+            self.resetHideTracking()
         }
         contentView.onPointerInteractionChange = { [weak self] _ in
             guard let self,
@@ -437,6 +514,7 @@ final class DockPanelController {
         now: Date,
         isFileDrag: Bool = false
     ) {
+        latestPointerSample = (location, pressedButtons)
         guard !isInputCandidateOccluding,
               presentationMode != .suppressed else {
             return
@@ -450,7 +528,7 @@ final class DockPanelController {
         }
         if isContextMenuPresented {
             panel.ignoresMouseEvents = false
-            mouseLeftAt = nil
+            resetHideTracking()
             return
         }
         let hasActiveFileDrag = isFileDrag
@@ -458,16 +536,21 @@ final class DockPanelController {
             || isFileDragCaptureActive
         let hasPotentialPointerDrag = pressedButtons != 0
         let shouldHoldForDrag = hasActiveFileDrag || hasPotentialPointerDrag
+        let interactionLocation = DockBottomInteractionGeometry.normalizedLocation(
+            location,
+            displayFrame: descriptor.frame,
+            panelFrame: panel.frame
+        )
         var allowsSyntheticPointerEntry = false
         if panel.isVisible, hasPotentialPointerDrag {
             // A cross-process drag is not guaranteed to expose its payload on
             // the global drag pasteboard. Let the registered destination
             // inspect NSDraggingInfo instead of leaving the panel click-through.
             panel.ignoresMouseEvents = false
-            mouseLeftAt = nil
+            resetHideTracking()
         }
         if panel.isVisible, pressedButtons == 0, !hasActiveFileDrag {
-            let isInteractivePoint = contentView.shouldReceiveMouse(at: location)
+            let isInteractivePoint = contentView.shouldReceiveMouse(at: interactionLocation)
             panel.ignoresMouseEvents = false
             allowsSyntheticPointerEntry = DockSampledPointerEntryPolicy.allowsEntry(
                 isInteractivePoint: isInteractivePoint,
@@ -476,7 +559,7 @@ final class DockPanelController {
         }
         if hasActiveFileDrag, panel.isVisible {
             panel.ignoresMouseEvents = false
-            mouseLeftAt = nil
+            resetHideTracking()
         }
         if isFileDragDestinationActive, hasPotentialPointerDrag {
             let isOutsideDragContinuationFrame = !panel.frame.contains(location)
@@ -487,7 +570,7 @@ final class DockPanelController {
         if state.allowsTooltipPresentation {
             if panel.isVisible {
                 contentView.reconcilePointer(
-                    screenLocation: location,
+                    screenLocation: interactionLocation,
                     allowsSyntheticEntry: allowsSyntheticPointerEntry
                 )
             } else {
@@ -504,7 +587,7 @@ final class DockPanelController {
         }
 
         if isLaunchBounceActive {
-            mouseLeftAt = nil
+            resetHideTracking()
             switch state {
             case .showing, .visible, .alwaysVisible:
                 return
@@ -516,31 +599,40 @@ final class DockPanelController {
         switch state {
         case .hidden, .hiding:
             guard isInHotZone(location) else {
-                hotZoneEnteredAt = nil
+                resetHotZoneTracking()
                 return
             }
             if hotZoneEnteredAt == nil {
                 hotZoneEnteredAt = now
             }
             let requiredDelay = isInternalBottomEdge(atX: location.x) ? preferences.internalEdgeDelay : 0
-            if shouldHoldForDrag
-                || now.timeIntervalSince(hotZoneEnteredAt ?? now) >= requiredDelay {
+            let elapsed = now.timeIntervalSince(hotZoneEnteredAt ?? now)
+            if shouldHoldForDrag || elapsed >= requiredDelay {
                 show(always: false, animated: true)
-                hotZoneEnteredAt = nil
+                resetHotZoneTracking()
+            } else {
+                scheduleHotZoneReveal(after: requiredDelay - elapsed)
             }
 
         case .showing, .visible:
             if shouldHoldForDrag {
-                mouseLeftAt = nil
+                resetHideTracking()
                 return
             }
-            if panel.frame.insetBy(dx: -8, dy: -8).contains(location) {
-                mouseLeftAt = nil
+            let holdRegion = DockBottomInteractionGeometry.visibleHoldRegion(
+                panelFrame: panel.frame,
+                displayFrame: descriptor.frame
+            )
+            if holdRegion.contains(location) {
+                resetHideTracking()
             } else {
                 if mouseLeftAt == nil { mouseLeftAt = now }
-                if now.timeIntervalSince(mouseLeftAt ?? now) >= preferences.hideDelay {
+                let elapsed = now.timeIntervalSince(mouseLeftAt ?? now)
+                if elapsed >= preferences.hideDelay {
                     hide(animated: true)
-                    mouseLeftAt = nil
+                    resetHideTracking()
+                } else {
+                    scheduleHide(after: preferences.hideDelay - elapsed)
                 }
             }
 
@@ -552,6 +644,8 @@ final class DockPanelController {
     func destroy() {
         animationGeneration &+= 1
         fileDragCaptureRevision &+= 1
+        resetHotZoneTracking()
+        resetHideTracking()
         contentView.cancelFileDrag()
         panel.ignoresMouseEvents = false
         contentView.resetInteraction()
@@ -616,7 +710,7 @@ final class DockPanelController {
             panel.setFrame(NSRect(origin: origin, size: size), display: false)
         }
         if shouldDisplay, state.allowsTooltipPresentation {
-            contentView.reconcilePointer(screenLocation: NSEvent.mouseLocation)
+            reconcileCurrentPointer()
         }
         if shouldDisplay {
             panel.displayIfNeeded()
@@ -635,6 +729,8 @@ final class DockPanelController {
         }
         animationGeneration &+= 1
         let generation = animationGeneration
+        resetHotZoneTracking()
+        resetHideTracking()
         state = always ? .alwaysVisible : .showing
         applyLayout()
         contentView.resetInteraction()
@@ -650,6 +746,7 @@ final class DockPanelController {
             contentView.frame.origin = .zero
             contentView.alphaValue = 1
             if !always { state = .visible }
+            reconcileCurrentPointer()
             return
         }
 
@@ -662,6 +759,7 @@ final class DockPanelController {
             Task { @MainActor [weak self] in
                 guard let self, self.animationGeneration == generation else { return }
                 if !always { self.state = .visible }
+                self.reconcileCurrentPointer()
             }
         }
     }
@@ -670,6 +768,8 @@ final class DockPanelController {
         guard state != .hidden else { return }
         animationGeneration &+= 1
         let generation = animationGeneration
+        resetHotZoneTracking()
+        resetHideTracking()
         state = .hiding
         contentView.cancelFileDrag()
         panel.ignoresMouseEvents = false
@@ -702,8 +802,8 @@ final class DockPanelController {
     }
 
     private func reconcilePresentationMode(animated: Bool) {
-        hotZoneEnteredAt = nil
-        mouseLeftAt = nil
+        resetHotZoneTracking()
+        resetHideTracking()
 
         if isInputCandidateOccluding {
             forceHideImmediately()
@@ -724,6 +824,8 @@ final class DockPanelController {
 
     private func forceHideImmediately() {
         animationGeneration &+= 1
+        resetHotZoneTracking()
+        resetHideTracking()
         state = .hidden
         contentView.cancelFileDrag()
         fileDragCaptureRevision &+= 1
@@ -741,14 +843,136 @@ final class DockPanelController {
         contentView.frame.origin = .zero
     }
 
+    private func reconcileCurrentPointer() {
+        guard panel.isVisible,
+              currentPressedMouseButtons == 0,
+              !isFileDragDestinationActive,
+              !isFileDragCaptureActive else { return }
+        let location = DockBottomInteractionGeometry.normalizedLocation(
+            currentPointerLocation,
+            displayFrame: descriptor.frame,
+            panelFrame: panel.frame
+        )
+        let allowsEntry = contentView.shouldReceiveMouse(at: location)
+        contentView.reconcilePointer(
+            screenLocation: location,
+            allowsSyntheticEntry: allowsEntry
+        )
+    }
+
+    private func resetHotZoneTracking() {
+        hotZoneRevealTimer?.invalidate()
+        hotZoneRevealTimer = nil
+        hotZoneEnteredAt = nil
+    }
+
+    private func scheduleHotZoneReveal(after delay: TimeInterval) {
+        guard hotZoneRevealTimer == nil else { return }
+        let timer = Timer(timeInterval: max(0.001, delay), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.hotZoneRevealTimer = nil
+                self.evaluateHotZoneReveal()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        hotZoneRevealTimer = timer
+    }
+
+    private func evaluateHotZoneReveal() {
+        guard presentationMode == .autoHidden,
+              !isInputCandidateOccluding,
+              state == .hidden || state == .hiding else {
+            resetHotZoneTracking()
+            return
+        }
+        let location = currentPointerLocation
+        guard isInHotZone(location) else {
+            resetHotZoneTracking()
+            return
+        }
+
+        let now = Date()
+        if hotZoneEnteredAt == nil {
+            hotZoneEnteredAt = now
+        }
+        let requiredDelay = isInternalBottomEdge(atX: location.x)
+            ? preferences.internalEdgeDelay
+            : 0
+        let elapsed = now.timeIntervalSince(hotZoneEnteredAt ?? now)
+        if currentPressedMouseButtons != 0 || elapsed >= requiredDelay {
+            show(always: false, animated: true)
+        } else {
+            scheduleHotZoneReveal(after: requiredDelay - elapsed)
+        }
+    }
+
+    private func resetHideTracking() {
+        hideTimer?.invalidate()
+        hideTimer = nil
+        mouseLeftAt = nil
+    }
+
+    private func scheduleHide(after delay: TimeInterval) {
+        guard hideTimer == nil else { return }
+        let timer = Timer(timeInterval: max(0.001, delay), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.hideTimer = nil
+                self.evaluateScheduledHide()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        hideTimer = timer
+    }
+
+    private func evaluateScheduledHide() {
+        guard presentationMode == .autoHidden,
+              state == .showing || state == .visible,
+              !isContextMenuPresented,
+              !isLaunchBounceActive,
+              !isFileDragDestinationActive,
+              !isFileDragCaptureActive,
+              currentPressedMouseButtons == 0 else {
+            resetHideTracking()
+            return
+        }
+
+        let location = currentPointerLocation
+        let holdRegion = DockBottomInteractionGeometry.visibleHoldRegion(
+            panelFrame: panel.frame,
+            displayFrame: descriptor.frame
+        )
+        guard !holdRegion.contains(location) else {
+            resetHideTracking()
+            return
+        }
+
+        let now = Date()
+        if mouseLeftAt == nil {
+            mouseLeftAt = now
+        }
+        let elapsed = now.timeIntervalSince(mouseLeftAt ?? now)
+        if elapsed >= preferences.hideDelay {
+            hide(animated: true)
+        } else {
+            scheduleHide(after: preferences.hideDelay - elapsed)
+        }
+    }
+
     private func isInHotZone(_ location: CGPoint) -> Bool {
-        let width = min(descriptor.frame.width - 24, max(240, panel.frame.width))
-        let minimumX = descriptor.frame.midX - width / 2
-        let maximumX = descriptor.frame.midX + width / 2
-        return location.x >= minimumX
-            && location.x <= maximumX
-            && location.y >= descriptor.frame.minY
-            && location.y <= descriptor.frame.minY + 3
+        DockBottomInteractionGeometry.containsBottomEdgeHotZone(
+            location,
+            displayFrame: descriptor.frame
+        )
+    }
+
+    private var currentPointerLocation: CGPoint {
+        latestPointerSample?.location ?? NSEvent.mouseLocation
+    }
+
+    private var currentPressedMouseButtons: Int {
+        latestPointerSample?.pressedButtons ?? NSEvent.pressedMouseButtons
     }
 
     private func resizePanel(to size: NSSize) {
@@ -768,7 +992,7 @@ final class DockPanelController {
             contentView.layoutSubtreeIfNeeded()
         }
         if shouldDisplay, state.allowsTooltipPresentation {
-            contentView.reconcilePointer(screenLocation: NSEvent.mouseLocation)
+            reconcileCurrentPointer()
         }
         if shouldDisplay {
             panel.displayIfNeeded()

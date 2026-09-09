@@ -7,7 +7,7 @@ final class NativeDockEventPolicyTests: XCTestCase {
         XCTAssertTrue(NativeDockEventPolicy.canBeBlocked(.mouseMoved))
     }
 
-    func testMouseMovedWithPressedButtonPassesThrough() {
+    func testMouseMovedCanBeProtectedWhileAButtonIsPressed() {
         let pressedButtonMasks = [
             1,
             1 << 2,
@@ -15,7 +15,7 @@ final class NativeDockEventPolicyTests: XCTestCase {
         ]
 
         for pressedMouseButtons in pressedButtonMasks {
-            XCTAssertFalse(
+            XCTAssertTrue(
                 NativeDockEventPolicy.canBeBlocked(
                     .mouseMoved,
                     pressedMouseButtons: pressedMouseButtons
@@ -24,7 +24,7 @@ final class NativeDockEventPolicyTests: XCTestCase {
         }
     }
 
-    func testDraggedEventsPassThrough() {
+    func testDraggedEventsCanBeProtectedWithoutBreakingDragDelivery() {
         let eventTypes: [CGEventType] = [
             .leftMouseDragged,
             .rightMouseDragged,
@@ -32,8 +32,10 @@ final class NativeDockEventPolicyTests: XCTestCase {
         ]
 
         for eventType in eventTypes {
-            XCTAssertFalse(NativeDockEventPolicy.canBeBlocked(eventType))
+            XCTAssertTrue(NativeDockEventPolicy.canBeBlocked(eventType))
+            XCTAssertTrue(NativeDockEventPolicy.preservesDraggingDelivery(eventType))
         }
+        XCTAssertFalse(NativeDockEventPolicy.preservesDraggingDelivery(.mouseMoved))
     }
 
     func testTapDisabledEventsPassThrough() {
@@ -45,6 +47,67 @@ final class NativeDockEventPolicyTests: XCTestCase {
         for eventType in eventTypes {
             XCTAssertFalse(NativeDockEventPolicy.canBeBlocked(eventType))
         }
+    }
+}
+
+final class NativeDockLockGeometryTests: XCTestCase {
+    private let displays = [
+        NativeDockLockDisplayGeometry(
+            displayID: 1,
+            frame: CGRect(x: 0, y: 0, width: 100, height: 100),
+            isMirrorSecondary: false
+        ),
+        NativeDockLockDisplayGeometry(
+            displayID: 2,
+            frame: CGRect(x: 100, y: 0, width: 100, height: 100),
+            isMirrorSecondary: false
+        )
+    ]
+
+    func testConstrainedDragPointStaysOutsideNonTargetBottomTriggerZone() {
+        let point = CGPoint(x: 150, y: 99)
+
+        XCTAssertTrue(NativeDockLockGeometry.shouldBlock(
+            point: point,
+            displays: displays,
+            targetDisplayID: 1,
+            edge: .bottom
+        ))
+        XCTAssertEqual(
+            NativeDockLockGeometry.constrainedPoint(
+                for: point,
+                displays: displays,
+                targetDisplayID: 1,
+                edge: .bottom
+            ),
+            CGPoint(x: 150, y: 89)
+        )
+    }
+
+    func testTargetDisplayBottomEdgeRemainsUntouched() {
+        let point = CGPoint(x: 50, y: 99)
+
+        XCTAssertFalse(NativeDockLockGeometry.shouldBlock(
+            point: point,
+            displays: displays,
+            targetDisplayID: 1,
+            edge: .bottom
+        ))
+        XCTAssertNil(NativeDockLockGeometry.constrainedPoint(
+            for: point,
+            displays: displays,
+            targetDisplayID: 1,
+            edge: .bottom
+        ))
+    }
+
+    func testPhysicalBottomBoundaryIsIncludedOnProtectedDisplay() {
+        XCTAssertTrue(NativeDockLockGeometry.shouldBlock(
+            point: CGPoint(x: 150, y: 100),
+            displays: displays,
+            targetDisplayID: 1,
+            edge: .bottom
+        ))
     }
 }
 

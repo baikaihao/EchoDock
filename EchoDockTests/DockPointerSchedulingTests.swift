@@ -2,6 +2,81 @@ import XCTest
 @testable import EchoDock
 
 final class DockPointerSchedulingTests: XCTestCase {
+    func testBottomScreenEdgeProjectsIntoFloatingDockInteraction() {
+        let displayFrame = CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        let panelFrame = CGRect(x: 500, y: 6, width: 440, height: 80)
+
+        XCTAssertEqual(
+            DockBottomInteractionGeometry.normalizedLocation(
+                CGPoint(x: 720, y: 0),
+                displayFrame: displayFrame,
+                panelFrame: panelFrame
+            ),
+            CGPoint(x: 720, y: 6)
+        )
+        XCTAssertEqual(
+            DockBottomInteractionGeometry.normalizedLocation(
+                CGPoint(x: 400, y: 0),
+                displayFrame: displayFrame,
+                panelFrame: panelFrame
+            ),
+            CGPoint(x: 400, y: 6)
+        )
+        XCTAssertEqual(
+            DockBottomInteractionGeometry.normalizedLocation(
+                CGPoint(x: -1, y: 0),
+                displayFrame: displayFrame,
+                panelFrame: panelFrame
+            ),
+            CGPoint(x: -1, y: 0)
+        )
+    }
+
+    func testBottomScreenEdgeProjectsOutsideTheDockIconSpan() {
+        let displayFrame = CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        let panelFrame = CGRect(x: 500, y: 6, width: 440, height: 80)
+
+        XCTAssertEqual(
+            DockBottomInteractionGeometry.normalizedLocation(
+                CGPoint(x: 80, y: 0),
+                displayFrame: displayFrame,
+                panelFrame: panelFrame
+            ),
+            CGPoint(x: 80, y: 6)
+        )
+        XCTAssertTrue(
+            DockBottomInteractionGeometry.containsBottomEdgeHotZone(
+                CGPoint(x: 80, y: 3),
+                displayFrame: displayFrame
+            )
+        )
+    }
+
+    func testVisibleHoldRegionCoversOnlyTheBottomStripAcrossTheDisplay() {
+        let displayFrame = CGRect(x: 1_440, y: -900, width: 1_920, height: 900)
+        let panelFrame = CGRect(x: 2_000, y: -894, width: 400, height: 72)
+        let region = DockBottomInteractionGeometry.visibleHoldRegion(
+            panelFrame: panelFrame,
+            displayFrame: displayFrame
+        )
+
+        XCTAssertEqual(region.minX, displayFrame.minX)
+        XCTAssertEqual(region.maxX, displayFrame.maxX)
+        XCTAssertEqual(region.minY, displayFrame.minY)
+        XCTAssertTrue(region.contains(CGPoint(x: displayFrame.minX + 1, y: -899)))
+        XCTAssertFalse(region.contains(CGPoint(x: displayFrame.minX + 1, y: -700)))
+    }
+
+    func testVisibleDockHoldRegionReachesThePhysicalScreenBottom() {
+        let region = DockBottomInteractionGeometry.visibleHoldRegion(
+            panelFrame: CGRect(x: 500, y: 6, width: 440, height: 80),
+            displayFrame: CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        )
+
+        XCTAssertEqual(region.minY, 0)
+        XCTAssertTrue(region.contains(CGPoint(x: 720, y: 0)))
+    }
+
     func testPrimaryShortPressActivatesOnlyWhenReleasedInside() {
         XCTAssertEqual(
             DockPrimaryPressPolicy.action(

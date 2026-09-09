@@ -440,7 +440,7 @@ The interface is available in Simplified Chinese and English. Dual-display, trip
 <details>
 <summary><strong>EchoDock does not appear</strong></summary>
 
-The menu bar should offer “Hide EchoDock”, not “Show EchoDock”. Then check that the current display is enabled under Settings → Displays. With Auto Hide enabled, keep the pointer at the bottom-center area. A shared internal display edge may also require the configured dwell time.
+The menu bar should offer “Hide EchoDock”, not “Show EchoDock”. Then check that the current display is enabled under Settings → Displays. With Auto Hide enabled, move the pointer along the display's physical bottom edge. A shared internal display edge may also require the configured dwell time.
 
 </details>
 

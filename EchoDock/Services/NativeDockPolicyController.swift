@@ -32,6 +32,11 @@ final class NativeDockPolicyController {
         nativeDockLockService.currentDockDisplayID
     }
 
+    var onProtectedEdgePointerMotion: (@MainActor (CGPoint, Int) -> Void)? {
+        get { nativeDockLockService.onProtectedEdgePointerMotion }
+        set { nativeDockLockService.onProtectedEdgePointerMotion = newValue }
+    }
+
     func start() {
         guard notificationObservers.isEmpty else { return }
 
