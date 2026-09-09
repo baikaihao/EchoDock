@@ -196,6 +196,10 @@ final class DockBackgroundSurfaceView: NSView {
         contentHost.wantsLayer = true
         contentHost.clipsToBounds = false
         contentHost.layer?.masksToBounds = false
+        // Keep the icon/interaction host above the classic background rim.
+        // The rim is intentionally above the material surface, but must not
+        // draw over icon artwork or magnification layers.
+        contentHost.layer?.zPosition = 20
 
         glassContentProxy.wantsLayer = true
         glassContentProxy.clipsToBounds = false
