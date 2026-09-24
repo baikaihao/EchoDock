@@ -8,11 +8,28 @@ enum ApplicationWindowCloseResult: Equatable {
     case failed
 }
 
+enum ApplicationWindowMinimizeResult: Equatable {
+    case requested
+    case noMinimizableWindow
+    case permissionDenied
+    case failed
+}
+
+enum ApplicationWindowRestoreResult: Equatable {
+    case restored(processIdentifier: pid_t)
+    case none
+    case permissionDenied
+    case failed
+}
+
 @MainActor
 protocol ApplicationWindowControlling {
     var hasAccessibilityPermission: Bool { get }
     func canCloseWindow(processIdentifiers: [pid_t]) -> Bool
     func closePreferredWindow(processIdentifiers: [pid_t]) -> ApplicationWindowCloseResult
+    func minimizePreferredWindow(processIdentifiers: [pid_t]) -> ApplicationWindowMinimizeResult
+    func restoreLastMinimizedWindow(processIdentifiers: [pid_t]) -> ApplicationWindowRestoreResult
+    func reapplyLastMinimization(processIdentifiers: [pid_t]) -> ApplicationWindowMinimizeResult
 }
 
 struct ApplicationWindowInventory<Window: Equatable> {
@@ -138,12 +155,18 @@ protocol ApplicationWindowAccessibilityAdapting {
     func inventory(for processIdentifier: pid_t) -> ApplicationWindowInventory<Window>?
     func isClosable(_ window: Window) -> Bool
     func pressClose(_ window: Window) -> ApplicationWindowPressResult
+    func isMinimizable(_ window: Window) -> Bool
+    /// nil means the object is unavailable or its minimized state cannot be read.
+    func isMinimized(_ window: Window) -> Bool?
+    func pressMinimize(_ window: Window) -> ApplicationWindowPressResult
+    func restore(_ window: Window) -> ApplicationWindowPressResult
 }
 
 @MainActor
 final class ApplicationWindowService<Adapter: ApplicationWindowAccessibilityAdapting>:
     ApplicationWindowControlling {
     private let adapter: Adapter
+    private var lastMinimizedWindows: [pid_t: Adapter.Window] = [:]
 
     init(adapter: Adapter) {
         self.adapter = adapter
@@ -203,6 +226,119 @@ final class ApplicationWindowService<Adapter: ApplicationWindowAccessibilityAdap
             }
         }
         return .noClosableWindow
+    }
+
+    func minimizePreferredWindow(
+        processIdentifiers: [pid_t]
+    ) -> ApplicationWindowMinimizeResult {
+        guard adapter.isTrusted else { return .permissionDenied }
+
+        // Do not minimize a second document while a window from this click
+        // cycle is still minimized. The controller must restore that one first.
+        for processIdentifier in processIdentifiers {
+            guard let window = lastMinimizedWindows[processIdentifier] else { continue }
+            if adapter.isMinimized(window) == true { return .requested }
+            lastMinimizedWindows.removeValue(forKey: processIdentifier)
+        }
+
+        for processIdentifier in processIdentifiers {
+            guard let inventory = adapter.inventory(for: processIdentifier) else { continue }
+            switch ApplicationWindowSelector.preferredWindow(
+                in: inventory,
+                isClosable: adapter.isMinimizable
+            ) {
+            case let .window(window):
+                let result = adapter.pressMinimize(window)
+                switch result {
+                case .success:
+                    lastMinimizedWindows[processIdentifier] = window
+                    return .requested
+                case .cannotComplete:
+                    // Never retry an uncertain action or fall through to a
+                    // different window. Read back the requested window only.
+                    guard adapter.isMinimized(window) == true else { return .failed }
+                    lastMinimizedWindows[processIdentifier] = window
+                    return .requested
+                case .failure:
+                    return .failed
+                }
+            case .blocked, .none:
+                continue
+            }
+        }
+        return .noMinimizableWindow
+    }
+
+    func restoreLastMinimizedWindow(
+        processIdentifiers: [pid_t]
+    ) -> ApplicationWindowRestoreResult {
+        guard adapter.isTrusted else { return .permissionDenied }
+        for processIdentifier in processIdentifiers {
+            guard let window = lastMinimizedWindows[processIdentifier] else { continue }
+            guard adapter.isMinimized(window) == true else {
+                // It was restored by the user, closed, or became an invalid AX
+                // object. This click must not restore any other document.
+                lastMinimizedWindows.removeValue(forKey: processIdentifier)
+                return .none
+            }
+            guard let inventory = adapter.inventory(for: processIdentifier),
+                  !inventory.focusedTopLevelElementBlocksFallback else {
+                return .failed
+            }
+            switch adapter.restore(window) {
+            case .success:
+                lastMinimizedWindows.removeValue(forKey: processIdentifier)
+                return .restored(processIdentifier: processIdentifier)
+            case .cannotComplete:
+                if adapter.isMinimized(window) == false {
+                    lastMinimizedWindows.removeValue(forKey: processIdentifier)
+                    return .restored(processIdentifier: processIdentifier)
+                }
+                if adapter.isMinimized(window) == nil {
+                    lastMinimizedWindows.removeValue(forKey: processIdentifier)
+                }
+                return .failed
+            case .failure:
+                if adapter.isMinimized(window) == nil {
+                    lastMinimizedWindows.removeValue(forKey: processIdentifier)
+                }
+                return .failed
+            }
+        }
+        return .none
+    }
+
+    func reapplyLastMinimization(
+        processIdentifiers: [pid_t]
+    ) -> ApplicationWindowMinimizeResult {
+        guard adapter.isTrusted else { return .permissionDenied }
+        for processIdentifier in processIdentifiers {
+            guard let window = lastMinimizedWindows[processIdentifier] else { continue }
+            guard let isMinimized = adapter.isMinimized(window) else {
+                lastMinimizedWindows.removeValue(forKey: processIdentifier)
+                return .noMinimizableWindow
+            }
+            if isMinimized { return .requested }
+            guard let inventory = adapter.inventory(for: processIdentifier),
+                  !inventory.focusedTopLevelElementBlocksFallback,
+                  adapter.isMinimizable(window) else { return .failed }
+
+            // A delayed application reopen may have undone the previous
+            // action. Reapply to the remembered window, never the newly focused
+            // document. A successful restore clears this record beforehand.
+            switch adapter.pressMinimize(window) {
+            case .success:
+                return .requested
+            case .cannotComplete:
+                return adapter.isMinimized(window) == true ? .requested : .failed
+            case .failure:
+                if adapter.isMinimized(window) == nil {
+                    lastMinimizedWindows.removeValue(forKey: processIdentifier)
+                }
+                return .failed
+            }
+        }
+        return .noMinimizableWindow
     }
 }
 
@@ -295,6 +431,81 @@ struct SystemApplicationWindowAccessibilityAdapter: ApplicationWindowAccessibili
             return .cannotComplete
         default:
             return .failure
+        }
+    }
+
+    func isMinimizable(_ window: SystemApplicationWindow) -> Bool {
+        _ = AXUIElementSetMessagingTimeout(window.element, Self.queryTimeout)
+        guard axString(window.element, attribute: kAXRoleAttribute) == kAXWindowRole as String,
+              !isModalTopLevelElement(window.element),
+              isMinimized(window) == false,
+              axBool(window.element, attribute: "AXFullScreen") != true else { return false }
+
+        if let button = minimizeButton(for: window.element) {
+            _ = AXUIElementSetMessagingTimeout(button, Self.queryTimeout)
+            // A disabled yellow button must not be bypassed with AXMinimized.
+            return axBool(button, attribute: kAXEnabledAttribute) != false
+        }
+        return isAttributeSettable(window.element, attribute: kAXMinimizedAttribute)
+    }
+
+    func isMinimized(_ window: SystemApplicationWindow) -> Bool? {
+        _ = AXUIElementSetMessagingTimeout(window.element, Self.queryTimeout)
+        return axBool(window.element, attribute: kAXMinimizedAttribute)
+    }
+
+    func pressMinimize(_ window: SystemApplicationWindow) -> ApplicationWindowPressResult {
+        guard isTrusted, isMinimizable(window) else { return .failure }
+        _ = AXUIElementSetMessagingTimeout(window.element, Self.actionTimeout)
+        if let button = minimizeButton(for: window.element) {
+            _ = AXUIElementSetMessagingTimeout(button, Self.actionTimeout)
+            guard axBool(button, attribute: kAXEnabledAttribute) != false else { return .failure }
+            // Press the system yellow title-bar button, allowing macOS to own
+            // the minimize transition and its configured Dock animation.
+            return actionResult(AXUIElementPerformAction(button, kAXPressAction as CFString))
+        }
+        guard isAttributeSettable(window.element, attribute: kAXMinimizedAttribute) else {
+            return .failure
+        }
+        return actionResult(AXUIElementSetAttributeValue(
+            window.element,
+            kAXMinimizedAttribute as CFString,
+            kCFBooleanTrue
+        ))
+    }
+
+    func restore(_ window: SystemApplicationWindow) -> ApplicationWindowPressResult {
+        guard isTrusted, isMinimized(window) == true,
+              isAttributeSettable(window.element, attribute: kAXMinimizedAttribute) else {
+            return .failure
+        }
+        _ = AXUIElementSetMessagingTimeout(window.element, Self.actionTimeout)
+        return actionResult(AXUIElementSetAttributeValue(
+            window.element,
+            kAXMinimizedAttribute as CFString,
+            kCFBooleanFalse
+        ))
+    }
+
+    private func minimizeButton(for window: AXUIElement) -> AXUIElement? {
+        if let button = axElement(window, attribute: kAXMinimizeButtonAttribute) { return button }
+        return axElements(window, attribute: kAXChildrenAttribute).elements.first { child in
+            axString(child, attribute: kAXRoleAttribute) == kAXButtonRole as String
+                && axString(child, attribute: kAXSubroleAttribute) == kAXMinimizeButtonSubrole as String
+        }
+    }
+
+    private func isAttributeSettable(_ element: AXUIElement, attribute: String) -> Bool {
+        var isSettable = DarwinBoolean(false)
+        return AXUIElementIsAttributeSettable(element, attribute as CFString, &isSettable) == .success
+            && isSettable.boolValue
+    }
+
+    private func actionResult(_ error: AXError) -> ApplicationWindowPressResult {
+        switch error {
+        case .success: return .success
+        case .cannotComplete: return .cannotComplete
+        default: return .failure
         }
     }
 

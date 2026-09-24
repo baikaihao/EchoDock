@@ -60,7 +60,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 | 原生感交互 | 支持底部热区、普通自动隐藏与逐屏全屏自动隐藏、完整名称提示、鼠标与文件拖拽下的连续范围放大、相邻图标位移、Dock 宽度伸缩和横向滚动。 |
 | 窗口避让 | 可选地让普通最大化、左右分屏及接触屏幕底边的标准分屏窗口停在 EchoDock 上方；按显示器独立计算，仅在 EchoDock 常驻显示时生效。 |
 | 动画反馈 | 可选的应用启动弹跳与运行指示灯；未固定的运行中应用进入或退出时平滑缩放和渐显、渐隐。 |
-| 应用操作 | 左键启动或切换应用；右键可打开应用、显示窗口、关闭窗口、隐藏/显示、退出，以及在 Finder 中定位。 |
+| 应用操作 | 左键启动或切换应用；再次点击前台应用可将当前窗口最小化，再次点击恢复该窗口（需要辅助功能权限）。右键可打开应用、显示窗口、关闭窗口、隐藏/显示、退出，以及在 Finder 中定位。 |
 | 外观调整 | 调整图标大小、图标间距、背景透明度、放大倍率、影响范围和名称框距离，并独立开关启动弹跳与运行指示灯；macOS 26 及以上可切换经典与液态玻璃风格。 |
 | 原生 Dock 屏幕策略 | 显示原生 Dock 的实际所在屏幕，或尝试将它固定到所选显示器；状态会在设置中明确展示。 |
 | 菜单栏控制 | 快速显示/隐藏 EchoDock、立即刷新应用列表、打开设置与关于窗口，或退出应用。 |
@@ -81,7 +81,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 #### 启动与切换应用
 
 - 点击尚未运行的应用，EchoDock 会启动它；“启动弹跳”开启时会持续弹跳，直到应用进入运行状态。
-- 点击正在运行的应用，EchoDock 会取消隐藏该应用并将它切换到前台。
+- 点击后台或已隐藏的应用会将其切换到前台；点击前台应用会通过系统最小化当前窗口并播放系统动画，再次点击优先恢复同一窗口。最小化与恢复需要辅助功能权限；动画的目的地由原生 Dock 决定。
 - “运行指示灯”开启时，图标下方的指示点表示应用正在运行。
 - 应用列表过宽时，可在 EchoDock 上使用触控板或鼠标滚轮横向浏览。
 
@@ -164,6 +164,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 
 以下功能需要辅助功能权限：
 
+- 点击前台应用图标时最小化窗口，以及恢复刚才由 EchoDock 最小化的同一窗口；
 - 检测原生 Dock 当前实际位于哪块显示器；
 - 尝试迁移并固定原生 Dock；
 - 调整普通最大化和贴边分屏窗口，使其为常驻显示的 EchoDock 留出空间；
@@ -281,7 +282,7 @@ EchoDock adds an independent, interactive app dock to the bottom of each display
 | Native-feeling interaction | Includes bottom-edge reveal, regular auto-hide, per-display full-screen auto-hide, full item-name labels, continuous neighborhood magnification for both pointer and file drags, icon displacement, Dock width expansion, and horizontal scrolling. |
 | Maximized and tiled-window clearance | Optionally keeps ordinary maximized and bottom-edge tiled windows above EchoDock, calculated independently per display and active only while EchoDock remains visible. |
 | Motion feedback | Offers optional launch bounces and running indicators, and smoothly scales/fades unpinned running apps in and out. |
-| App controls | Left-click to launch or switch. Right-click to open, reveal windows, close a window, hide/show, quit, or locate the app in Finder. |
+| App controls | Left-click to launch or switch; clicking the active app minimizes its current window, and another click restores that same window (requires Accessibility permission). Right-click to open, reveal windows, close a window, hide/show, quit, or locate the app in Finder. |
 | Appearance controls | Adjust icon size, spacing, background transparency, magnification scale and range, and label distance, with separate launch-bounce and running-indicator switches. macOS 26 and later can switch between Classic and Liquid Glass. |
 | System Dock display policy | Shows the display that actually contains the system Dock, or makes a best-effort attempt to keep it on a selected display. |
 | Menu bar controls | Show/hide EchoDock, refresh the app list, open Settings or About, and quit the utility. |
@@ -302,7 +303,7 @@ By default, EchoDock is enabled on every available display, stays visible on reg
 #### Launching and switching apps
 
 - Click an app that is not running to launch it. When Launch Bounce is enabled, EchoDock keeps bouncing until the application is running.
-- Click a running app to unhide it and bring it forward.
+- Click a background or hidden app to bring it forward. Click the active app to minimize its current window through macOS; click again to restore that same window. Minimizing and restoring require Accessibility permission. The animation and its destination are controlled by the system Dock.
 - When Running Indicators is enabled, the indicator below an icon means the app is currently running.
 - If the app list is wider than the display, use a trackpad or mouse wheel over EchoDock to scroll horizontally.
 
@@ -385,6 +386,7 @@ The core multi-display Dock, app-list synchronization, launching/switching, thir
 
 Accessibility permission is required to:
 
+- minimize the active app's window by clicking its icon, and restore the same window minimized by EchoDock;
 - detect which display actually contains the system Dock;
 - relocate and protect the system Dock in fixed mode;
 - adjust ordinary maximized and bottom-edge tiled windows so they leave room for a persistently visible EchoDock;

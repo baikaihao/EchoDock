@@ -14,6 +14,7 @@ extension NSWorkspace: WorkspaceApplicationOpening {}
 
 @MainActor
 protocol RunningApplicationOperating {
+    func isActive(_ application: NSRunningApplication) -> Bool
     func isHidden(_ application: NSRunningApplication) -> Bool
     func isTerminated(_ application: NSRunningApplication) -> Bool
     func unhide(_ application: NSRunningApplication) -> Bool
@@ -27,6 +28,10 @@ protocol RunningApplicationOperating {
 
 @MainActor
 struct SystemRunningApplicationOperations: RunningApplicationOperating {
+    func isActive(_ application: NSRunningApplication) -> Bool {
+        application.isActive
+    }
+
     func isHidden(_ application: NSRunningApplication) -> Bool {
         application.isHidden
     }
@@ -59,13 +64,31 @@ struct SystemRunningApplicationOperations: RunningApplicationOperating {
 final class RunningApplicationActivationService {
     private let workspace: WorkspaceApplicationOpening
     private let operations: RunningApplicationOperating
+    private let visibleWindowProcessIdentifiers: () -> Set<pid_t>
+    private var nextPresentationGeneration: UInt64 = 0
+    private var foregroundGeneration: UInt64 = 0
+    private var presentationRequests: [pid_t: (
+        generation: UInt64, hidden: Bool, onStaleReopen: (() -> Void)?
+    )] = [:]
 
     init(
         workspace: WorkspaceApplicationOpening,
-        operations: RunningApplicationOperating? = nil
+        operations: RunningApplicationOperating? = nil,
+        visibleWindowProcessIdentifiers: (() -> Set<pid_t>)? = nil
     ) {
         self.workspace = workspace
         self.operations = operations ?? SystemRunningApplicationOperations()
+        self.visibleWindowProcessIdentifiers = visibleWindowProcessIdentifiers
+            ?? VisibleApplicationWindows.processIdentifiers
+    }
+
+    func hasActiveVisibleApplication(_ applications: [NSRunningApplication]) -> Bool {
+        let activeApplications = applications.filter {
+            !operations.isTerminated($0) && operations.isActive($0) && !operations.isHidden($0)
+        }
+        guard !activeApplications.isEmpty else { return false }
+        let visibleProcesses = visibleWindowProcessIdentifiers()
+        return activeApplications.contains { visibleProcesses.contains($0.processIdentifier) }
     }
 
     func reopen(
@@ -73,12 +96,36 @@ final class RunningApplicationActivationService {
         applicationURL: URL,
         completion: @escaping (Error?) -> Void
     ) {
+        let foregroundGeneration = invalidatePendingForegroundRequests()
+        let generation = recordPresentationRequest(application, hidden: false)
         let activatedBeforeReopen = prepareForForeground(application)
         let configuration = Self.reopenConfiguration(for: application)
 
         workspace.openApplication(at: applicationURL, configuration: configuration) { [weak self] reopenedApplication, error in
             DispatchQueue.main.async {
                 guard let self else { return }
+
+                // 新的点击意图优先。系统打开请求不能取消；若它晚于隐藏
+                // 操作完成，再次隐藏，避免旧回调将窗口重新拉到前台。
+                let request = self.presentationRequests[application.processIdentifier]
+                guard request?.generation == generation else {
+                    let staleApplication = reopenedApplication ?? application
+                    if let reapply = request?.onStaleReopen {
+                        reapply()
+                    } else if request?.hidden == true && !self.operations.isTerminated(staleApplication) {
+                        _ = self.operations.hide(staleApplication)
+                    }
+                    completion(nil)
+                    return
+                }
+
+                // A more recent action for another application also wins.
+                // Per-process generations alone cannot prevent focus stealing
+                // when the user clicks A and then B before A finishes opening.
+                guard self.foregroundGeneration == foregroundGeneration else {
+                    completion(nil)
+                    return
+                }
 
                 if let reopenedApplication {
                     _ = self.prepareForForeground(reopenedApplication)
@@ -100,10 +147,13 @@ final class RunningApplicationActivationService {
                 completion(activatedBeforeReopen || activatedAfterFailure ? nil : error)
             }
         }
+        scheduleForegroundVerification(application, generation: generation, foregroundGeneration: foregroundGeneration)
     }
 
     func hide(_ applications: [NSRunningApplication]) -> Bool {
         guard !applications.isEmpty else { return false }
+        invalidatePendingForegroundRequests()
+        applications.forEach { _ = recordPresentationRequest($0, hidden: true) }
         let requestsSucceeded = perform(applications, operation: operations.hide)
         return requestsSucceeded || areHiddenOrTerminated(applications)
     }
@@ -115,18 +165,87 @@ final class RunningApplicationActivationService {
     }
 
     func activateAllWindows(_ applications: [NSRunningApplication]) -> Bool {
-        perform(applications, operation: prepareForForeground)
+        let foregroundGeneration = invalidatePendingForegroundRequests()
+        let generations = applications.map { recordPresentationRequest($0, hidden: false) }
+        let result = perform(applications, operation: prepareForForeground)
+        // 多实例时只确认最后一个（首选实例）的焦点，避免实例互相抢前台。
+        if let application = applications.last, let generation = generations.last {
+            scheduleForegroundVerification(application, generation: generation, foregroundGeneration: foregroundGeneration)
+        }
+        return result
+    }
+
+    func cancelPendingReopen(
+        _ applications: [NSRunningApplication],
+        onStaleReopen: @escaping () -> Void
+    ) {
+        invalidatePendingForegroundRequests()
+        applications.forEach {
+            _ = recordPresentationRequest($0, hidden: false, onStaleReopen: onStaleReopen)
+        }
     }
 
     func terminate(_ applications: [NSRunningApplication]) -> Bool {
-        perform(applications, operation: operations.terminate)
+        invalidatePendingForegroundRequests()
+        // Quitting may leave a save-confirmation dialog open. Cancel stale
+        // activation without hiding that dialog if the process is still alive.
+        applications.forEach { _ = recordPresentationRequest($0, hidden: false) }
+        return perform(applications, operation: operations.terminate)
+    }
+
+    @discardableResult
+    func invalidatePendingForegroundRequests() -> UInt64 {
+        foregroundGeneration &+= 1
+        return foregroundGeneration
+    }
+
+    private func recordPresentationRequest(
+        _ application: NSRunningApplication,
+        hidden: Bool,
+        onStaleReopen: (() -> Void)? = nil
+    ) -> UInt64 {
+        nextPresentationGeneration &+= 1
+        presentationRequests[application.processIdentifier] = (nextPresentationGeneration, hidden, onStaleReopen)
+        return nextPresentationGeneration
+    }
+
+    private func scheduleForegroundVerification(
+        _ application: NSRunningApplication,
+        generation: UInt64,
+        foregroundGeneration: UInt64,
+        delays: [TimeInterval] = [0.05, 0.10, 0.20]
+    ) {
+        guard let delay = delays.first else { return }
+        // AppKit 的取消隐藏和激活均为异步请求。只在本次点击仍有效时
+        // 进行短暂、有上限的确认，绝不重发可能新建窗口的 reopen 事件。
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self,
+                  self.foregroundGeneration == foregroundGeneration,
+                  let request = self.presentationRequests[application.processIdentifier],
+                  request.generation == generation, !request.hidden,
+                  request.onStaleReopen == nil,
+                  !self.operations.isTerminated(application) else { return }
+            if self.operations.isActive(application) && !self.operations.isHidden(application) { return }
+            if self.operations.isHidden(application) {
+                _ = self.operations.unhide(application)
+            } else {
+                _ = self.operations.activate(application, options: Self.activationOptions)
+            }
+            self.scheduleForegroundVerification(
+                application, generation: generation, foregroundGeneration: foregroundGeneration,
+                delays: Array(delays.dropFirst())
+            )
+        }
     }
 
     static func reopenConfiguration(
         for application: NSRunningApplication
     ) -> NSWorkspace.OpenConfiguration {
         let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
+        // Foregrounding is handled explicitly above and checked against the
+        // latest intent. A late Launch Services request must not independently
+        // steal focus after the user has selected another application.
+        configuration.activates = false
         configuration.addsToRecentItems = false
         configuration.createsNewApplicationInstance = false
         configuration.allowsRunningApplicationSubstitution = false
@@ -179,6 +298,27 @@ final class RunningApplicationActivationService {
             options.insert(.activateIgnoringOtherApps)
         }
         return options
+    }
+}
+
+enum VisibleApplicationWindows {
+    static func processIdentifiers() -> Set<pid_t> {
+        let windows = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+        ) as? [[String: Any]] ?? []
+        return processIdentifiers(in: windows)
+    }
+
+    static func processIdentifiers(in windows: [[String: Any]]) -> Set<pid_t> {
+        Set(windows.compactMap { window in
+            guard let pid = window[kCGWindowOwnerPID as String] as? Int,
+                  let layer = window[kCGWindowLayer as String] as? Int, layer == 0,
+                  (window[kCGWindowAlpha as String] as? Double ?? 1) > 0,
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let frame = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+                  !frame.isEmpty else { return nil }
+            return pid_t(pid)
+        })
     }
 }
 
@@ -383,6 +523,7 @@ final class DockModelController {
     }
 
     func performPrimaryAction(for item: DockItem) {
+        activationService.invalidatePendingForegroundRequests()
         switch item.kind {
         case .fileShortcut(_, _, let isAvailable):
             if isAvailable {
@@ -404,7 +545,40 @@ final class DockModelController {
         if applications.isEmpty {
             launchApplication(item)
         } else {
-            activateRunningApplication(item, candidates: applications)
+            let processIdentifiers = applications.sorted(by: preferredApplication).map(\.processIdentifier)
+            switch applicationWindowService.restoreLastMinimizedWindow(processIdentifiers: processIdentifiers) {
+            case let .restored(processIdentifier):
+                // Only foreground the instance whose remembered window was
+                // restored; another instance may currently be preferred.
+                let restoredApplications = applications.filter { $0.processIdentifier == processIdentifier }
+                _ = activationService.activateAllWindows(restoredApplications)
+                runningMonitor.reconcile()
+                return
+            case .failed:
+                showTemporaryFailure(L10n.text("dock.error.restoreWindow"), identity: item.identity)
+                return
+            case .none, .permissionDenied:
+                break
+            }
+
+            // 使用实时前台状态，避免图标快照滞后；无可见窗口时仍应恢复。
+            if activationService.hasActiveVisibleApplication(applications) {
+                switch applicationWindowService.minimizePreferredWindow(processIdentifiers: processIdentifiers) {
+                case .requested:
+                    activationService.cancelPendingReopen(applications) { [weak self] in
+                        // 若更早的打开请求晚到，只重新最小化同一个已记住的窗口。
+                        _ = self?.applicationWindowService.reapplyLastMinimization(processIdentifiers: processIdentifiers)
+                    }
+                    clearTemporaryFailure(for: item.identity)
+                    runningMonitor.reconcile()
+                case .permissionDenied:
+                    showTemporaryFailure(L10n.text("dock.error.accessibilityMinimize"), identity: item.identity)
+                case .noMinimizableWindow, .failed:
+                    showTemporaryFailure(L10n.text("dock.error.minimizeWindow"), identity: item.identity)
+                }
+            } else {
+                activateRunningApplication(item, candidates: applications)
+            }
         }
     }
 
@@ -460,6 +634,7 @@ final class DockModelController {
     }
 
     func performContextAction(_ action: DockItemContextAction, for item: DockItem) {
+        activationService.invalidatePendingForegroundRequests()
         cancelHideVerification(for: item.identity)
         switch action {
         case .revealInFinder:
