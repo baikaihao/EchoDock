@@ -171,6 +171,22 @@
         }
       }
     },
+    "dock.error.accessibilityMinimize" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accessibility permission is required to minimize windows"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要辅助功能权限，才能最小化窗口"
+          }
+        }
+      }
+    },
     "dock.error.invalidPreferences" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -205,6 +221,22 @@
         }
       }
     },
+    "dock.error.minimizeWindow" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The current window cannot be minimized"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "当前窗口不能最小化"
+          }
+        }
+      }
+    },
     "dock.error.parsePinnedApps" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -235,6 +267,22 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法读取系统程序坞配置"
+          }
+        }
+      }
+    },
+    "dock.error.restoreWindow" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to restore the minimized window"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法恢复刚才最小化的窗口"
           }
         }
       }
