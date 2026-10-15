@@ -76,6 +76,8 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 
 默认情况下，EchoDock 会启用所有可用屏幕、在普通桌面保持显示，并在原生全屏空间中自动隐藏；运行中未固定的应用、启动弹跳与运行指示灯也默认开启。你可以在“通用”中调整两种自动隐藏行为，或从菜单栏选择“隐藏 EchoDock”，临时隐藏所有面板而不退出后台同步。
 
+> **上下双屏配置指南：** 如果外接屏位于内建屏上方，参阅[上下双屏配置：每屏有程序坞，浏览器留出空间](docs/vertically-stacked-displays.zh-CN.md)，了解程序坞分配、窗口避让与新扩展屏设置。
+
 ### 使用方式
 
 #### 启动与切换应用
@@ -297,6 +299,8 @@ EchoDock adds an independent, interactive app dock to the bottom of each display
 6. Drag files or folders from Finder to the area left of Trash to add them to the third section.
 
 By default, EchoDock is enabled on every available display, stays visible on regular desktops, and hides automatically in native full-screen spaces. Unpinned running apps, launch bounces, and running indicators are also enabled by default. You can adjust both auto-hide behaviors under General, or choose “Hide EchoDock” from the menu bar to hide all panels temporarily while keeping synchronization running.
+
+> **Vertically stacked displays:** See the [Chinese setup guide](docs/vertically-stacked-displays.zh-CN.md) for assigning the system Dock and EchoDock to separate displays, reserving window space, and enabling new extended displays.
 
 ### How to use it
 
