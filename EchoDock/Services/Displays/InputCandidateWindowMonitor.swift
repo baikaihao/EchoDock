@@ -6,6 +6,7 @@ struct InputCandidateWindowSnapshot: Equatable {
     let layer: Int
     let ownerProcessIdentifier: pid_t
     let isRegularApplication: Bool
+    let ownerBundleIdentifier: String?
     let alpha: CGFloat
     let isOnScreen: Bool
 }
@@ -16,6 +17,13 @@ struct InputCandidateDockRegion: Equatable {
 }
 
 enum InputCandidateAvoidancePolicy {
+    // Mission Control and Show Desktop create overlays below the Dock level.
+    // They are desktop infrastructure, not input candidates to hide the Dock for.
+    private static let desktopManagementBundleIdentifiers: Set<String> = [
+        "com.apple.WindowManager",
+        "com.apple.dock"
+    ]
+
     static func occludedDisplayIdentities(
         regions: [InputCandidateDockRegion],
         windows: [InputCandidateWindowSnapshot],
@@ -31,6 +39,7 @@ enum InputCandidateAvoidancePolicy {
                 && window.ownerProcessIdentifier > 0
                 && window.ownerProcessIdentifier != excludingProcessIdentifier
                 && !window.isRegularApplication
+                && !desktopManagementBundleIdentifiers.contains(window.ownerBundleIdentifier ?? "")
                 && window.layer > normalWindowLevel
                 && window.layer < dockWindowLevel
                 && isValid(window.bounds)
@@ -102,6 +111,11 @@ struct InputCandidateOcclusionDebouncer {
 }
 
 private enum SystemInputCandidateWindowSnapshotProvider {
+    private struct WindowOwner {
+        let isRegularApplication: Bool
+        let bundleIdentifier: String?
+    }
+
     static func currentSnapshots() -> [InputCandidateWindowSnapshot]? {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let windowInfo = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
@@ -111,7 +125,7 @@ private enum SystemInputCandidateWindowSnapshotProvider {
 
         let normalWindowLevel = Int(CGWindowLevelForKey(.normalWindow))
         let dockWindowLevel = Int(CGWindowLevelForKey(.dockWindow))
-        var regularApplicationCache: [pid_t: Bool] = [:]
+        var ownerCache: [pid_t: WindowOwner] = [:]
         return windowInfo.compactMap { info in
             guard let boundsDictionary = info[kCGWindowBounds as String] as? NSDictionary,
                   let bounds = CGRect(dictionaryRepresentation: boundsDictionary),
@@ -127,21 +141,26 @@ private enum SystemInputCandidateWindowSnapshotProvider {
             }
 
             let processIdentifier = pid_t(ownerNumber.int32Value)
-            let isRegularApplication: Bool
-            if let cached = regularApplicationCache[processIdentifier] {
-                isRegularApplication = cached
+            let owner: WindowOwner
+            if let cached = ownerCache[processIdentifier] {
+                owner = cached
             } else {
-                isRegularApplication = NSRunningApplication(
+                let application = NSRunningApplication(
                     processIdentifier: processIdentifier
-                )?.activationPolicy == .regular
-                regularApplicationCache[processIdentifier] = isRegularApplication
+                )
+                owner = WindowOwner(
+                    isRegularApplication: application?.activationPolicy == .regular,
+                    bundleIdentifier: application?.bundleIdentifier
+                )
+                ownerCache[processIdentifier] = owner
             }
 
             return InputCandidateWindowSnapshot(
                 bounds: bounds,
                 layer: layer,
                 ownerProcessIdentifier: processIdentifier,
-                isRegularApplication: isRegularApplication,
+                isRegularApplication: owner.isRegularApplication,
+                ownerBundleIdentifier: owner.bundleIdentifier,
                 alpha: CGFloat(
                     (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
                 ),

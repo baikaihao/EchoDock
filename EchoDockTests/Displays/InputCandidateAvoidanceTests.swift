@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 import XCTest
+import Testing
 @testable import EchoDock
 
 final class InputCandidateAvoidancePolicyTests: XCTestCase {
@@ -126,8 +127,72 @@ final class InputCandidateAvoidancePolicyTests: XCTestCase {
             layer: layer,
             ownerProcessIdentifier: ownerPID,
             isRegularApplication: isRegularApplication,
+            ownerBundleIdentifier: nil,
             alpha: alpha,
             isOnScreen: isOnScreen
+        )
+    }
+}
+
+struct InputCandidateSystemOverlayTests {
+    private let displayIdentity = DisplayIdentity(rawValue: "secondary")
+    private let dockFrame = CGRect(x: 2_441, y: 1_159, width: 1_149, height: 72)
+
+    @Test(arguments: ["com.apple.WindowManager", "com.apple.dock"], [14, 18, 19])
+    func desktopManagementOverlayKeepsDockVisible(bundleIdentifier: String, layer: Int) {
+        let overlay = makeWindow(
+            bounds: CGRect(x: 2_056, y: 157, width: 1_920, height: 1_080),
+            layer: layer,
+            bundleIdentifier: bundleIdentifier
+        )
+
+        #expect(occludedDisplays(windows: [overlay]).isEmpty)
+    }
+
+    @Test(arguments: ["com.apple.inputmethod.SCIM", "im.rime.inputmethod.Squirrel", nil] as [String?])
+    func inputCandidateStillHidesDock(bundleIdentifier: String?) {
+        let candidate = makeWindow(bounds: dockFrame, layer: 19, bundleIdentifier: bundleIdentifier)
+
+        #expect(occludedDisplays(windows: [candidate]) == [displayIdentity])
+    }
+
+    @Test
+    func inputCandidateStillHidesDockDuringMissionControl() {
+        let overlay = makeWindow(
+            bounds: CGRect(x: 2_056, y: 157, width: 1_920, height: 1_080),
+            layer: 19,
+            bundleIdentifier: "com.apple.WindowManager"
+        )
+        let candidate = makeWindow(
+            bounds: dockFrame,
+            layer: 1,
+            bundleIdentifier: "com.apple.inputmethod.SCIM"
+        )
+
+        #expect(occludedDisplays(windows: [overlay, candidate]) == [displayIdentity])
+    }
+
+    private func occludedDisplays(windows: [InputCandidateWindowSnapshot]) -> Set<DisplayIdentity> {
+        InputCandidateAvoidancePolicy.occludedDisplayIdentities(
+            regions: [InputCandidateDockRegion(displayIdentity: displayIdentity, frame: dockFrame)],
+            windows: windows,
+            excludingProcessIdentifier: 42
+        )
+    }
+
+    private func makeWindow(
+        bounds: CGRect,
+        layer: Int,
+        bundleIdentifier: String?
+    ) -> InputCandidateWindowSnapshot {
+        InputCandidateWindowSnapshot(
+            bounds: bounds,
+            layer: layer,
+            ownerProcessIdentifier: 100,
+            isRegularApplication: false,
+            ownerBundleIdentifier: bundleIdentifier,
+            alpha: 1,
+            isOnScreen: true
         )
     }
 }
