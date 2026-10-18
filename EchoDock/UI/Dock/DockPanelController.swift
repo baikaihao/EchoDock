@@ -315,6 +315,9 @@ final class DockPanelController {
         self.descriptor = descriptor
         self.preferences = preferences
         self.contentView = DockContentView(iconProvider: iconProvider)
+        contentView.fileDragRegionProvider = { [weak self] in
+            self?.fileDragRegion
+        }
         contentView.onItemAction = onItemAction
         contentView.onItemContextAction = onItemContextAction
         contentView.onItemContextMenuStateRequest = contextMenuStateProvider
@@ -562,7 +565,7 @@ final class DockPanelController {
             resetHideTracking()
         }
         if isFileDragDestinationActive, hasPotentialPointerDrag {
-            let isOutsideDragContinuationFrame = !panel.frame.contains(location)
+            let isOutsideDragContinuationFrame = !fileDragRegion.contains(location)
             if isOutsideDragContinuationFrame {
                 contentView.cancelFileDrag()
             }
@@ -1051,6 +1054,14 @@ final class DockPanelController {
             y: descriptor.frame.minY,
             width: reservedWidth,
             height: max(1, bodyTop - descriptor.frame.minY)
+        )
+    }
+
+    private var fileDragRegion: DockFileDragRegion {
+        DockFileDragRegion(
+            panelFrame: panel.frame,
+            receiverFrame: isFileDragCaptureActive && dragReceiverPanel.isVisible
+                ? dragReceiverPanel.frame : nil
         )
     }
 

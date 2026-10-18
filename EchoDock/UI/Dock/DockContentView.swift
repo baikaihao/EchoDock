@@ -31,6 +31,7 @@ final class DockContentView: NSView {
     var onLaunchBounceActivityChange: ((Bool) -> Void)?
     var onFileDragActivityChange: ((Bool) -> Void)?
     var onDropRequest: ((DockDropRequest) -> Bool)?
+    var fileDragRegionProvider: (() -> DockFileDragRegion?)?
 
     private let backgroundView = DockBackgroundSurfaceView()
     private let scrollView = HorizontalDockScrollView()
@@ -791,7 +792,16 @@ final class DockContentView: NSView {
     private func fileDragLocationInStrip(for sender: NSDraggingInfo) -> NSPoint {
         let pointInContent: NSPoint
         if let window {
-            let pointInWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+            // The sender may belong to the separate receiver below the Dock.
+            // Convert its event sample through that window rather than mixing
+            // it with a newer NSEvent.mouseLocation sample.
+            let destinationWindow = sender.draggingDestinationWindow ?? window
+            let screenLocation = destinationWindow.convertPoint(
+                toScreen: sender.draggingLocation
+            )
+            let interactionLocation = fileDragRegionProvider?()?
+                .interactionLocation(for: screenLocation) ?? screenLocation
+            let pointInWindow = window.convertPoint(fromScreen: interactionLocation)
             pointInContent = convert(pointInWindow, from: nil)
         } else {
             pointInContent = convert(sender.draggingLocation, from: nil)
@@ -876,6 +886,9 @@ final class DockContentView: NSView {
     }
 
     private var isPointerWithinDragBounds: Bool {
+        if let region = fileDragRegionProvider?() {
+            return region.contains(NSEvent.mouseLocation)
+        }
         guard let window else { return false }
         let pointInWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
         let pointInContent = convert(pointInWindow, from: nil)
