@@ -25,32 +25,6 @@ enum NativeDockLockEdge: String, Equatable {
     case right
 }
 
-enum NativeDockEventPolicy {
-    static func canBeBlocked(
-        _ eventType: CGEventType,
-        pressedMouseButtons _: Int = 0
-    ) -> Bool {
-        switch eventType {
-        case .mouseMoved,
-             .leftMouseDragged,
-             .rightMouseDragged,
-             .otherMouseDragged:
-            return true
-        default:
-            return false
-        }
-    }
-
-    static func preservesDraggingDelivery(_ eventType: CGEventType) -> Bool {
-        switch eventType {
-        case .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
-            return true
-        default:
-            return false
-        }
-    }
-}
-
 enum NativeDockRelocationInputPolicy {
     static func canRelocate(pressedMouseButtons: Int) -> Bool {
         pressedMouseButtons == 0
@@ -227,34 +201,6 @@ enum NativeDockLockGeometry {
             edge: edge,
             depth: depth
         ) != nil
-    }
-
-    static func constrainedPoint(
-        for point: CGPoint,
-        displays: [NativeDockLockDisplayGeometry],
-        targetDisplayID: CGDirectDisplayID,
-        edge: NativeDockLockEdge,
-        depth: CGFloat = 10,
-        clearance: CGFloat = 1
-    ) -> CGPoint? {
-        guard let display = protectedDisplay(
-            at: point,
-            displays: displays,
-            targetDisplayID: targetDisplayID,
-            edge: edge,
-            depth: depth
-        ) else { return nil }
-
-        let zone = triggerZone(for: display.frame, edge: edge, depth: depth)
-        let clearance = max(0.5, clearance)
-        switch edge {
-        case .bottom:
-            return CGPoint(x: point.x, y: zone.minY - clearance)
-        case .left:
-            return CGPoint(x: zone.maxX + clearance, y: point.y)
-        case .right:
-            return CGPoint(x: zone.minX - clearance, y: point.y)
-        }
     }
 
     private static func protectedDisplay(
@@ -878,10 +824,7 @@ final class NativeDockLockService {
         }
 
         let pressedMouseButtons = NSEvent.pressedMouseButtons
-        guard NativeDockEventPolicy.canBeBlocked(
-            eventType,
-            pressedMouseButtons: pressedMouseButtons
-        ) else {
+        guard NativeDockEventPolicy.canBeBlocked(eventType) else {
             return Unmanaged.passUnretained(event)
         }
 
@@ -917,17 +860,11 @@ final class NativeDockLockService {
             pressedButtons: pressedMouseButtons
         )
 
-        if NativeDockEventPolicy.preservesDraggingDelivery(eventType),
-           let constrainedPoint = NativeDockLockGeometry.constrainedPoint(
-               for: quartzLocation,
-               displays: displays,
-               targetDisplayID: targetDisplayID,
-               edge: edge
-           ) {
-            event.location = constrainedPoint
-            return Unmanaged.passUnretained(event)
-        }
-        return nil
+        guard let deliveredEvent = NativeDockProtectedEdgeEventRouter.route(
+            event,
+            pressedMouseButtons: pressedMouseButtons
+        ) else { return nil }
+        return Unmanaged.passUnretained(deliveredEvent)
     }
 
     private func enqueueProtectedEdgePointerMotion(

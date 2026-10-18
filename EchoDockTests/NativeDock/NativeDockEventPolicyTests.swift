@@ -16,7 +16,7 @@ final class NativeDockEventPolicyTests: XCTestCase {
 
         for pressedMouseButtons in pressedButtonMasks {
             XCTAssertTrue(
-                NativeDockEventPolicy.canBeBlocked(
+                NativeDockEventPolicy.requiresApplicationDelivery(
                     .mouseMoved,
                     pressedMouseButtons: pressedMouseButtons
                 )
@@ -33,9 +33,15 @@ final class NativeDockEventPolicyTests: XCTestCase {
 
         for eventType in eventTypes {
             XCTAssertTrue(NativeDockEventPolicy.canBeBlocked(eventType))
-            XCTAssertTrue(NativeDockEventPolicy.preservesDraggingDelivery(eventType))
+            XCTAssertTrue(NativeDockEventPolicy.requiresApplicationDelivery(
+                eventType,
+                pressedMouseButtons: 0
+            ))
         }
-        XCTAssertFalse(NativeDockEventPolicy.preservesDraggingDelivery(.mouseMoved))
+        XCTAssertFalse(NativeDockEventPolicy.requiresApplicationDelivery(
+            .mouseMoved,
+            pressedMouseButtons: 0
+        ))
     }
 
     func testTapDisabledEventsPassThrough() {
@@ -64,7 +70,7 @@ final class NativeDockLockGeometryTests: XCTestCase {
         )
     ]
 
-    func testConstrainedDragPointStaysOutsideNonTargetBottomTriggerZone() {
+    func testNonTargetBottomTriggerZoneIsProtected() {
         let point = CGPoint(x: 150, y: 99)
 
         XCTAssertTrue(NativeDockLockGeometry.shouldBlock(
@@ -73,15 +79,6 @@ final class NativeDockLockGeometryTests: XCTestCase {
             targetDisplayID: 1,
             edge: .bottom
         ))
-        XCTAssertEqual(
-            NativeDockLockGeometry.constrainedPoint(
-                for: point,
-                displays: displays,
-                targetDisplayID: 1,
-                edge: .bottom
-            ),
-            CGPoint(x: 150, y: 89)
-        )
     }
 
     func testTargetDisplayBottomEdgeRemainsUntouched() {
@@ -89,12 +86,6 @@ final class NativeDockLockGeometryTests: XCTestCase {
 
         XCTAssertFalse(NativeDockLockGeometry.shouldBlock(
             point: point,
-            displays: displays,
-            targetDisplayID: 1,
-            edge: .bottom
-        ))
-        XCTAssertNil(NativeDockLockGeometry.constrainedPoint(
-            for: point,
             displays: displays,
             targetDisplayID: 1,
             edge: .bottom

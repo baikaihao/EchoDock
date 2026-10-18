@@ -172,6 +172,7 @@
       }
     },
     "dock.error.accessibilityMinimize" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -222,6 +223,7 @@
       }
     },
     "dock.error.minimizeWindow" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -272,6 +274,7 @@
       }
     },
     "dock.error.restoreWindow" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -338,23 +341,6 @@
         }
       }
     },
-    "dock.error.unableTrash" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Unable to move the item to Trash"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "无法将项目移到废纸篓"
-          }
-        }
-      }
-    },
     "dock.error.unableShow" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -385,6 +371,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "无法切换到 %@"
+          }
+        }
+      }
+    },
+    "dock.error.unableTrash" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Unable to move the item to Trash"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法将项目移到废纸篓"
           }
         }
       }
@@ -1715,57 +1718,6 @@
         }
       }
     },
-    "settings.general.reserveSpaceForWindows" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Reserve Space for Windows"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "为窗口预留空间"
-          }
-        }
-      }
-    },
-    "settings.general.reserveSpaceForWindows.autoHideHint" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Turn off Automatically Hide to reserve screen space."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "关闭“自动隐藏”后才能预留屏幕空间。"
-          }
-        }
-      }
-    },
-    "settings.general.reserveSpaceForWindows.description" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Keep maximized and tiled windows clear of EchoDock, and snap manually moved windows to its edge."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "让最大化和分屏窗口避开 EchoDock，手动移动或缩放窗口时可吸附到其边缘。"
-          }
-        }
-      }
-    },
     "settings.general.enabled" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1881,6 +1833,57 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "自动启用新连接显示器"
+          }
+        }
+      }
+    },
+    "settings.general.reserveSpaceForWindows" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Reserve Space for Windows"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "为窗口预留空间"
+          }
+        }
+      }
+    },
+    "settings.general.reserveSpaceForWindows.autoHideHint" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Turn off Automatically Hide to reserve screen space."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "关闭“自动隐藏”后才能预留屏幕空间。"
+          }
+        }
+      }
+    },
+    "settings.general.reserveSpaceForWindows.description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Keep maximized and tiled windows clear of EchoDock, and snap manually moved windows to its edge."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "让最大化和分屏窗口避开 EchoDock，手动移动或缩放窗口时可吸附到其边缘。"
           }
         }
       }

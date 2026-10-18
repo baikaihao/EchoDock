@@ -483,6 +483,33 @@ By default EchoDock is an overlay and may cover the bottom of ordinary windows. 
 
 ---
 
+## 源码目录 / Source layout
+
+```text
+EchoDock/
+├── App/                      # 启动、生命周期、通知与本地化 / App lifecycle and localization
+├── Models/                   # 数据模型与几何规则 / Models and geometry
+├── Resources/                # 图标与本地化资源 / Icons and localized resources
+├── Services/
+│   ├── Applications/         # 应用名称、图标、运行状态与窗口操作 / App identity, state and windows
+│   ├── Displays/             # 多屏协调、鼠标边缘、全屏与窗口避让 / Displays and window avoidance
+│   ├── Dock/                 # 列表快照、交互调度与固定应用缓存 / Dock state and actions
+│   ├── Files/                # 文件快捷方式、废纸篓与撤销 / File shortcuts, Trash and undo
+│   ├── NativeDock/           # 系统 Dock 定位与屏幕策略 / System Dock placement
+│   ├── Permissions/          # 辅助功能授权与首次使用提示 / Permissions and onboarding
+│   └── Preferences/          # EchoDock 设置与系统 Dock 偏好读取 / Preferences and monitoring
+└── UI/
+    ├── Dock/                 # 程序坞面板、图标、布局与渲染 / Dock panels, layout and rendering
+    ├── Settings/             # 设置窗口及各设置页 / Settings window and pages
+    ├── AboutWindowController.swift
+    └── StatusItemController.swift
+EchoDockTests/                 # Applications / Displays / Dock / NativeDock
+```
+
+Xcode 使用文件夹自动同步，源码与测试的子目录会自动加入对应 target。新增文件按职责放入相应目录即可。
+
+Xcode uses file-system-synchronized folders. Source and test subfolders are automatically included in their respective targets; place new files in the folder that owns their responsibility.
+
 ## Build and technical notes
 
 EchoDock is a native AppKit menu bar app. It uses public macOS facilities including `NSWorkspace`, visual-effect materials, and the Accessibility API. The core app list is read from the local system Dock preferences; EchoDock does not inject code into system processes.

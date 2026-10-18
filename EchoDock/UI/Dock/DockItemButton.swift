@@ -858,6 +858,10 @@ final class DockItemButton: NSButton, NSDraggingSource {
             case .activate:
                 guard let currentItem = item,
                       currentItem.identity == pressedIdentity else { return }
+                // AX window actions can block until the system animation ends.
+                // Submit the released appearance before entering that call.
+                setPrimaryPressHighlighted(false)
+                CATransaction.flush()
                 onPress?(currentItem)
                 return
             case .beginFileDrag:
