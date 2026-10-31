@@ -70,9 +70,9 @@ struct DockFileDragRegionTests {
         ), itemAnimationsEnabled: false)
         controller.applyPreferences()
         let panel = try #require(NSApp.windows.first {
-            !previousWindows.contains(ObjectIdentifier($0)) && $0.contentView is DockContentView
+            !previousWindows.contains(ObjectIdentifier($0)) && $0.contentView is DockPanelPresentationView
         })
-        let content = try #require(panel.contentView as? DockContentView)
+        let content = try #require(panel.contentView?.subviews.compactMap { $0 as? DockContentView }.first)
         #expect(panel.isVisible)
         var labels: [String?] = []
         content.onTooltipPresentation = { labels.append($0?.text) }

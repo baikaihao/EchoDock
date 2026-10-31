@@ -65,7 +65,6 @@ final class DisplayCoordinator {
             self.fullScreenDisplayIDs = displayIDs
             self.applyFullScreenState()
         }
-        fullScreenMonitor.start()
         inputCandidateMonitor.regionsProvider = { [weak self] in
             self?.inputCandidateAvoidanceRegions ?? []
         }
@@ -225,7 +224,6 @@ final class DisplayCoordinator {
 
     func rebuildPanels() {
         displays = topologyProvider.currentDisplays()
-        fullScreenMonitor.updateDisplays(displays)
         preferences.registerDisplays(displays)
 
         let eligible = displays.filter {
@@ -234,6 +232,13 @@ final class DisplayCoordinator {
                 && preferences.isDisplayEnabled($0.identity)
         }
         let eligibleIdentities = Set(eligible.map(\.identity))
+        if preferences.autoHideInFullScreen, !eligible.isEmpty {
+            fullScreenMonitor.updateDisplays(eligible)
+            fullScreenMonitor.start()
+        } else {
+            fullScreenMonitor.stop()
+            fullScreenDisplayIDs.removeAll()
+        }
 
         let identitiesToRemove = panels.keys.filter { !eligibleIdentities.contains($0) }
         for identity in identitiesToRemove {

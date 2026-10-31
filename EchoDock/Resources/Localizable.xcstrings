@@ -1690,13 +1690,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Automatically Hide"
+            "value" : "Hide When Idle"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "自动隐藏"
+            "value" : "闲时隐藏"
           }
         }
       }
@@ -1860,13 +1860,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Turn off Automatically Hide to reserve screen space."
+            "value" : "Turn off Hide When Idle to reserve screen space."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "关闭“自动隐藏”后才能预留屏幕空间。"
+            "value" : "关闭“闲时隐藏”后才能预留屏幕空间。"
           }
         }
       }

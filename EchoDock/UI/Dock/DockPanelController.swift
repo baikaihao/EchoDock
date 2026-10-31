@@ -1,5 +1,4 @@
 import AppKit
-import QuartzCore
 
 enum DockPanelVisibilityState {
     case hidden
@@ -230,6 +229,7 @@ final class DockPanelController {
     private let dragReceiverPanel = DockPanel()
     private let tooltipPanelController = DockTooltipPanelController()
     private let contentView: DockContentView
+    private let presentationView: DockPanelPresentationView
     private let preferences: PreferencesStore
     private var descriptor: DisplayDescriptor
     private var state: DockPanelVisibilityState = .hidden
@@ -314,7 +314,9 @@ final class DockPanelController {
         self.displayIdentity = descriptor.identity
         self.descriptor = descriptor
         self.preferences = preferences
-        self.contentView = DockContentView(iconProvider: iconProvider)
+        let contentView = DockContentView(iconProvider: iconProvider)
+        self.contentView = contentView
+        self.presentationView = DockPanelPresentationView(presentedView: contentView)
         contentView.fileDragRegionProvider = { [weak self] in
             self?.fileDragRegion
         }
@@ -408,7 +410,7 @@ final class DockPanelController {
         panel.onDraggingEnded = { [weak self] sender in
             self?.contentView.draggingEnded(sender)
         }
-        panel.contentView = contentView
+        panel.contentView = presentationView
         dragReceiverPanel.level = EchoDockWindowLevel.dragReceiver
         dragReceiverPanel.ignoresMouseEvents = true
         dragReceiverPanel.onDraggingEntered = { [weak self] sender in
@@ -447,13 +449,13 @@ final class DockPanelController {
     func setFullScreenActive(_ isActive: Bool) {
         guard isFullScreenActive != isActive else { return }
         isFullScreenActive = isActive
-        reconcilePresentationMode(animated: false)
+        reconcilePresentationMode(animated: !isActive)
     }
 
     func setInputCandidateOccluding(_ isOccluding: Bool) {
         guard isInputCandidateOccluding != isOccluding else { return }
         isInputCandidateOccluding = isOccluding
-        reconcilePresentationMode(animated: false)
+        reconcilePresentationMode(animated: !isOccluding)
     }
 
     func apply(snapshot: DockSnapshot, itemAnimationsEnabled: Bool = true) {
@@ -508,7 +510,7 @@ final class DockPanelController {
 
     func applyPreferences() {
         applyLayout()
-        reconcilePresentationMode(animated: state != .alwaysVisible)
+        reconcilePresentationMode(animated: true)
     }
 
     func processMouse(
@@ -656,6 +658,7 @@ final class DockPanelController {
         tooltipPanelController.hide()
         dragReceiverPanel.orderOut(nil)
         panel.orderOut(nil)
+        presentationView.reset()
         panel.onPointerEvent = nil
         panel.onDraggingEntered = nil
         panel.onDraggingUpdated = nil
@@ -730,6 +733,9 @@ final class DockPanelController {
               presentationMode != .suppressed else {
             return
         }
+        if always, state == .alwaysVisible, panel.isVisible { return }
+        let wasVisible = panel.isVisible
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         animationGeneration &+= 1
         let generation = animationGeneration
         resetHotZoneTracking()
@@ -739,31 +745,15 @@ final class DockPanelController {
         contentView.resetInteraction()
         tooltipPanelController.hide()
         panel.ignoresMouseEvents = false
-        contentView.alphaValue = animated ? 0 : 1
-        var startFrame = contentView.bounds
-        startFrame.origin.y = animated ? -contentView.frame.height : 0
-        contentView.frame = startFrame
+        if !wasVisible {
+            presentationView.prepareForReveal(animated: animated, reduceMotion: reduceMotion)
+        }
         panel.orderFrontRegardless()
 
-        guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            contentView.frame.origin = .zero
-            contentView.alphaValue = 1
-            if !always { state = .visible }
-            reconcileCurrentPointer()
-            return
-        }
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            contentView.animator().setFrameOrigin(.zero)
-            contentView.animator().alphaValue = 1
-        } completionHandler: { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self, self.animationGeneration == generation else { return }
-                if !always { self.state = .visible }
-                self.reconcileCurrentPointer()
-            }
+        presentationView.setVisible(true, animated: animated, reduceMotion: reduceMotion) { [weak self] in
+            guard let self, self.animationGeneration == generation else { return }
+            if !always { self.state = .visible }
+            self.reconcileCurrentPointer()
         }
     }
 
@@ -784,24 +774,16 @@ final class DockPanelController {
             guard let self, self.animationGeneration == generation else { return }
             self.tooltipPanelController.hide()
             self.panel.orderOut(nil)
-            self.contentView.alphaValue = 1
-            self.contentView.frame.origin = .zero
+            self.presentationView.reset()
             self.state = .hidden
         }
 
-        guard animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            finish()
-            return
-        }
-
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.14
-            context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            contentView.animator().setFrameOrigin(NSPoint(x: 0, y: -contentView.frame.height))
-            contentView.animator().alphaValue = 0
-        }, completionHandler: {
-            Task { @MainActor in finish() }
-        })
+        presentationView.setVisible(
+            false,
+            animated: animated,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+            completion: finish
+        )
     }
 
     private func reconcilePresentationMode(animated: Bool) {
@@ -818,7 +800,7 @@ final class DockPanelController {
             forceHideImmediately()
         case .autoHidden:
             if state == .alwaysVisible {
-                hide(animated: false)
+                hide(animated: animated)
             }
         case .alwaysVisible:
             show(always: true, animated: animated)
@@ -842,8 +824,7 @@ final class DockPanelController {
         dragReceiverPanel.orderOut(nil)
         dragReceiverPanel.ignoresMouseEvents = true
         panel.orderOut(nil)
-        contentView.alphaValue = 1
-        contentView.frame.origin = .zero
+        presentationView.reset()
     }
 
     private func reconcileCurrentPointer() {
