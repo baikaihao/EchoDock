@@ -402,7 +402,21 @@ enum NativeDockLockGeometry {
 /// mouse movements on other displays.  This is the same class of mechanism
 /// used by several open-source Dock lock utilities. It is enabled only while
 /// the user has selected a fixed native-Dock target.
+@MainActor
 final class NativeDockLockService {
+    typealias WindowSnapshotProvider = (AccessibilityOperationBudget) -> NativeDockWindowSnapshot?
+
+    private let snapshotWorker: AccessibilityWorkQueue<WindowSnapshotProvider>
+    private let snapshotBudget = AccessibilityOperationBudget()
+    private let isAccessibilityGranted: () -> Bool
+
+    init(
+        windowSnapshotProvider: @escaping WindowSnapshotProvider = { NativeDockWindowSnapshotProvider(budget: $0).snapshots() },
+        isAccessibilityGranted: @escaping () -> Bool = { AXIsProcessTrusted() }
+    ) {
+        snapshotWorker = AccessibilityWorkQueue(backend: windowSnapshotProvider, name: "com.baikaihao.EchoDock.native-dock-snapshots")
+        self.isAccessibilityGranted = isAccessibilityGranted
+    }
     private static let dockDomain = "com.apple.dock" as CFString
     private static let dockOrientationKey = "orientation" as CFString
     private static let relocationInputRetryDelay: TimeInterval = 0.15
@@ -450,7 +464,11 @@ final class NativeDockLockService {
     private let syntheticEventMarker: Int64 = 0x4D554C5449444F43 // "MULTIDOC"
 
     deinit {
-        stop()
+        permissionTimer?.invalidate()
+        if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes) }
+        if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: false) }
+        observers.forEach { $0.center.removeObserver($0.token) }
+        if let dockPreferenceObserver { DistributedNotificationCenter.default().removeObserver(dockPreferenceObserver) }
     }
 
     func start() {
@@ -530,10 +548,14 @@ final class NativeDockLockService {
             )
         }
         let observedEdge = currentEdge()
-        currentDockDisplayID = detectCurrentDockDisplay(
-            displays: geometry,
-            edge: observedEdge
-        )
+        return refreshCurrentDockDisplay(displays: geometry, edge: observedEdge)
+    }
+
+    @discardableResult
+    func refreshCurrentDockDisplay(displays: [NativeDockLockDisplayGeometry], edge: NativeDockLockEdge) -> CGDirectDisplayID? {
+        detectCurrentDockDisplay(displays: displays, edge: edge) { [weak self] observed, isFresh in
+            if isFresh { self?.currentDockDisplayID = observed }
+        }
         return currentDockDisplayID
     }
 
@@ -548,6 +570,7 @@ final class NativeDockLockService {
         let previousStatus = status
         let targetChanged = self.targetDisplayID != targetDisplayID
         let geometryChanged = self.displays != displays || self.edge != edge
+        if targetChanged || geometryChanged || self.isEnabled != enabled { snapshotWorker.cancelAll() }
         self.displays = displays
         self.edge = edge
 
@@ -578,7 +601,7 @@ final class NativeDockLockService {
             return
         }
 
-        guard AXIsProcessTrusted() else {
+        guard isAccessibilityGranted() else {
             stopEventTap()
             cancelRelocation()
             currentDockDisplayID = nil
@@ -607,6 +630,7 @@ final class NativeDockLockService {
     }
 
     func stop() {
+        snapshotWorker.cancelAll()
         isRunning = false
         isEnabled = false
         targetDisplayID = nil
@@ -720,10 +744,9 @@ final class NativeDockLockService {
         if !isEnabled {
             let observedEdge = currentEdge()
             edge = observedEdge
-            currentDockDisplayID = detectCurrentDockDisplay(
-                displays: displays,
-                edge: observedEdge
-            )
+            detectCurrentDockDisplay(displays: displays, edge: observedEdge) { [weak self] observed, isFresh in
+            if isFresh { self?.currentDockDisplayID = observed }
+        }
             return
         }
         guard let targetDisplayID,
@@ -734,7 +757,7 @@ final class NativeDockLockService {
             status = .targetUnavailable
             return
         }
-        guard AXIsProcessTrusted() else {
+        guard isAccessibilityGranted() else {
             stopEventTap()
             cancelRelocation()
             currentDockDisplayID = nil
@@ -768,7 +791,7 @@ final class NativeDockLockService {
     }
 
     private func startEventTapIfNeeded() {
-        guard isEnabled, eventTap == nil, AXIsProcessTrusted() else { return }
+        guard isEnabled, eventTap == nil, isAccessibilityGranted() else { return }
 
         let eventMask = (CGEventMask(1) << CGEventType.mouseMoved.rawValue)
             | (CGEventMask(1) << CGEventType.leftMouseDragged.rawValue)
@@ -789,7 +812,7 @@ final class NativeDockLockService {
                 let service = Unmanaged<NativeDockLockService>
                     .fromOpaque(refcon)
                     .takeUnretainedValue()
-                return service.handle(eventType: type, event: event)
+                return MainActor.assumeIsolated { service.handle(eventType: type, event: event) }
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
@@ -1049,186 +1072,57 @@ final class NativeDockLockService {
 
     private func reconcileObservedDock(forceRelocation: Bool) {
         guard eventTap != nil, let targetDisplayID else { return }
-        currentDockDisplayID = detectCurrentDockDisplay(displays: displays, edge: edge)
-        if currentDockDisplayID == targetDisplayID {
-            cancelRelocation()
-            status = .active
-            return
+        detectCurrentDockDisplay(displays: displays, edge: edge) { [weak self] observed, isFresh in
+            guard let self, isFresh, self.eventTap != nil, self.targetDisplayID == targetDisplayID else { return }
+            self.currentDockDisplayID = observed
+            if observed == targetDisplayID {
+                self.cancelRelocation()
+                self.status = .active
+                return
+            }
+            guard forceRelocation || (self.status != .relocating && self.status != .verificationFailed) else { return }
+            self.cancelRelocation()
+            self.scheduleRelocation(after: 0.15)
         }
-
-        guard forceRelocation
-                || (status != .relocating && status != .verificationFailed) else {
-            return
-        }
-        cancelRelocation()
-        scheduleRelocation(after: 0.15)
     }
 
     private func verifyRelocation(generation: Int, attemptsRemaining: Int) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            guard let self,
-                  self.isEnabled,
-                  self.relocationGeneration == generation,
+            guard let self, self.isEnabled, generation == self.relocationGeneration,
                   let targetDisplayID = self.targetDisplayID else { return }
-
-            self.currentDockDisplayID = self.detectCurrentDockDisplay(
-                displays: self.displays,
-                edge: self.edge
-            )
-            if self.currentDockDisplayID == targetDisplayID {
-                self.status = .active
-            } else if attemptsRemaining > 1 {
-                self.verifyRelocation(
-                    generation: generation,
-                    attemptsRemaining: attemptsRemaining - 1
-                )
-            } else {
-                self.status = .verificationFailed
+            self.detectCurrentDockDisplay(displays: self.displays, edge: self.edge) { [weak self] observed, isFresh in
+                guard let self, self.isEnabled, generation == self.relocationGeneration else { return }
+                if isFresh { self.currentDockDisplayID = observed }
+                if isFresh && observed == targetDisplayID {
+                    self.status = .active
+                } else if attemptsRemaining > 1 {
+                    self.verifyRelocation(generation: generation, attemptsRemaining: attemptsRemaining - 1)
+                } else {
+                    self.status = .verificationFailed
+                }
             }
         }
     }
 
     private func detectCurrentDockDisplay(
         displays: [NativeDockLockDisplayGeometry],
-        edge: NativeDockLockEdge
-    ) -> CGDirectDisplayID? {
-        guard AXIsProcessTrusted(),
-              let dock = NSRunningApplication.runningApplications(
-                withBundleIdentifier: "com.apple.dock"
-              ).first else {
-            return nil
+        edge: NativeDockLockEdge,
+        completion: @escaping @MainActor (CGDirectDisplayID?, Bool) -> Void
+    ) {
+        guard isAccessibilityGranted() else {
+            snapshotWorker.cancelAll()
+            currentDockDisplayID = nil
+            completion(nil, true)
+            return
         }
-
-        let application = AXUIElementCreateApplication(dock.processIdentifier)
-        let dockListGeometries = dockListGeometries(in: application)
-        if let displayID = NativeDockDisplayDetector.displayID(
-            for: dockListGeometries,
-            displays: displays,
-            edge: edge
-        ) {
-            return displayID
+        let budget = snapshotBudget
+        snapshotWorker.submit(key: "snapshot", priority: .low, work: { provider, isCurrent in
+            budget.begin(duration: 0.5, isCurrent: isCurrent)
+            return provider(budget)
+        }) { [weak self] snapshots in
+            guard let self else { return }
+            guard let snapshots else { completion(self.currentDockDisplayID, false); return }
+            completion(snapshots.displayID(displays: displays, edge: edge), true)
         }
-
-        // Older Dock builds may expose only an AX window. Keep that as a
-        // geometry-filtered fallback after the semantic Dock list lookup.
-        let windowGeometries = axElements(
-            application,
-            attribute: kAXWindowsAttribute
-        ).compactMap(axGeometry)
-        return NativeDockDisplayDetector.displayID(
-            for: windowGeometries,
-            displays: displays,
-            edge: edge
-        )
-    }
-
-    private func dockListGeometries(in application: AXUIElement) -> [NativeDockWindowGeometry] {
-        var queue = axElements(
-            application,
-            attribute: kAXChildrenAttribute
-        ).map { (element: $0, depth: 1) }
-        var nextIndex = 0
-        var inspectedCount = 0
-        var result: [NativeDockWindowGeometry] = []
-
-        while nextIndex < queue.count, inspectedCount < 128 {
-            let entry = queue[nextIndex]
-            nextIndex += 1
-            inspectedCount += 1
-
-            let role = axString(entry.element, attribute: kAXRoleAttribute)
-            let subrole = axString(entry.element, attribute: kAXSubroleAttribute)
-            let children = axElements(entry.element, attribute: kAXChildrenAttribute)
-            let containsDockItem = children.prefix(32).contains { child in
-                let childRole = axString(child, attribute: kAXRoleAttribute)
-                let childSubrole = axString(child, attribute: kAXSubroleAttribute)
-                return childRole == "AXDockItem"
-                    || childSubrole == "AXDockItem"
-                    || childSubrole?.contains("DockItem") == true
-            }
-            let isDockList = subrole == "AXDockList"
-                || (role == "AXList" && containsDockItem)
-
-            if isDockList, let geometry = axGeometry(entry.element) {
-                result.append(geometry)
-                continue
-            }
-
-            if entry.depth < 5 {
-                queue.append(contentsOf: children.prefix(64).map {
-                    (element: $0, depth: entry.depth + 1)
-                })
-            }
-        }
-
-        return result
-    }
-
-    private func axGeometry(_ element: AXUIElement) -> NativeDockWindowGeometry? {
-        guard let position = axPoint(element, attribute: kAXPositionAttribute),
-              let size = axSize(element, attribute: kAXSizeAttribute) else {
-            return nil
-        }
-        return NativeDockWindowGeometry(
-            frame: CGRect(origin: position, size: size)
-        )
-    }
-
-    private func axElements(_ element: AXUIElement, attribute: String) -> [AXUIElement] {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            attribute as CFString,
-            &value
-        ) == .success else {
-            return []
-        }
-        return value as? [AXUIElement] ?? []
-    }
-
-    private func axString(_ element: AXUIElement, attribute: String) -> String? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            attribute as CFString,
-            &value
-        ) == .success else {
-            return nil
-        }
-        return value as? String
-    }
-
-    private func axPoint(_ element: AXUIElement, attribute: String) -> CGPoint? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            attribute as CFString,
-            &value
-        ) == .success,
-        let value,
-        CFGetTypeID(value) == AXValueGetTypeID() else {
-            return nil
-        }
-        let axValue = value as! AXValue
-        guard AXValueGetType(axValue) == .cgPoint else { return nil }
-        var point = CGPoint.zero
-        return AXValueGetValue(axValue, .cgPoint, &point) ? point : nil
-    }
-
-    private func axSize(_ element: AXUIElement, attribute: String) -> CGSize? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            attribute as CFString,
-            &value
-        ) == .success,
-        let value,
-        CFGetTypeID(value) == AXValueGetTypeID() else {
-            return nil
-        }
-        let axValue = value as! AXValue
-        guard AXValueGetType(axValue) == .cgSize else { return nil }
-        var size = CGSize.zero
-        return AXValueGetValue(axValue, .cgSize, &size) ? size : nil
     }
 }

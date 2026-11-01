@@ -4,6 +4,44 @@ import XCTest
 
 final class DockPrimaryActionTests: XCTestCase {
     @MainActor
+    func testABackgroundClickDoesNotBecomeAMinimizeAfterTheQueryReturns() {
+        let fixture = PrimaryActionFixture()
+        fixture.workspace.reportedFrontmost = fixture.second
+        fixture.windows.deferRestoration = true
+        fixture.controller.performPrimaryAction(for: fixture.item())
+        fixture.operations.set(fixture.first, active: true)
+        fixture.workspace.reportedFrontmost = fixture.first
+        fixture.windows.pendingRestorations[0](.none)
+        XCTAssertFalse(fixture.windows.events.contains(.minimize))
+        XCTAssertTrue(fixture.workspace.requests.isEmpty)
+        fixture.controller.stop()
+    }
+    @MainActor
+    func testAnExternalApplicationSwitchCancelsADelayedRestoration() {
+        let fixture = PrimaryActionFixture()
+        fixture.workspace.reportedFrontmost = fixture.first
+        fixture.windows.deferRestoration = true
+        fixture.controller.performPrimaryAction(for: fixture.item())
+        fixture.workspace.reportedFrontmost = fixture.second
+        fixture.windows.pendingRestorations[0](.restored(processIdentifier: 101))
+        XCTAssertTrue(fixture.operations.events.isEmpty)
+        XCTAssertTrue(fixture.workspace.requests.isEmpty)
+        fixture.controller.stop()
+    }
+    @MainActor
+    func testDelayedWindowRestorationCannotStealFocusAfterANewerClickOrStop() {
+        let fixture = PrimaryActionFixture()
+        fixture.windows.deferRestoration = true
+        fixture.controller.performPrimaryAction(for: fixture.item())
+        fixture.runningApplications = [fixture.second]
+        fixture.controller.performPrimaryAction(for: fixture.item(application: fixture.second))
+        fixture.windows.pendingRestorations[0](.restored(processIdentifier: 101))
+        XCTAssertTrue(fixture.operations.events.isEmpty)
+        fixture.controller.stop()
+        fixture.windows.pendingRestorations[1](.restored(processIdentifier: 102))
+        XCTAssertTrue(fixture.operations.events.isEmpty)
+    }
+    @MainActor
     func testActiveWindowMinimizesUsingLiveStateInsteadOfStaleSnapshot() {
         let fixture = PrimaryActionFixture()
         fixture.operations.set(fixture.first, active: true)
@@ -316,6 +354,8 @@ private final class PrimaryActionApplication: NSRunningApplication, @unchecked S
 
 @MainActor
 private final class PrimaryActionWorkspace: NSWorkspace {
+    var reportedFrontmost: NSRunningApplication?
+    override var frontmostApplication: NSRunningApplication? { reportedFrontmost }
     struct Request {
         let configuration: NSWorkspace.OpenConfiguration
         let completion: (@Sendable (NSRunningApplication?, Error?) -> Void)?
@@ -383,6 +423,21 @@ private final class PrimaryActionWindows: ApplicationWindowControlling {
     var focusedWindow = "first-window"
     var rememberedWindow: String?
     var reappliedWindows: [String] = []
+    var deferRestoration = false
+    var pendingRestorations: [@MainActor (ApplicationWindowRestoreResult) -> Void] = []
+    func closePreferredWindow(processIdentifiers: [pid_t], completion: @escaping @MainActor (ApplicationWindowCloseResult) -> Void) {
+        completion(closePreferredWindow(processIdentifiers: processIdentifiers))
+    }
+    func minimizePreferredWindow(processIdentifiers: [pid_t], completion: @escaping @MainActor (ApplicationWindowMinimizeResult) -> Void) {
+        completion(minimizePreferredWindow(processIdentifiers: processIdentifiers))
+    }
+    func restoreLastMinimizedWindow(processIdentifiers: [pid_t], completion: @escaping @MainActor (ApplicationWindowRestoreResult) -> Void) {
+        if deferRestoration { pendingRestorations.append(completion); return }
+        completion(restoreLastMinimizedWindow(processIdentifiers: processIdentifiers))
+    }
+    func reapplyLastMinimization(processIdentifiers: [pid_t], completion: @escaping @MainActor (ApplicationWindowMinimizeResult) -> Void) {
+        completion(reapplyLastMinimization(processIdentifiers: processIdentifiers))
+    }
     func canCloseWindow(processIdentifiers: [pid_t]) -> Bool { false }
     func closePreferredWindow(processIdentifiers: [pid_t]) -> ApplicationWindowCloseResult { .noClosableWindow }
     func minimizePreferredWindow(processIdentifiers: [pid_t]) -> ApplicationWindowMinimizeResult {

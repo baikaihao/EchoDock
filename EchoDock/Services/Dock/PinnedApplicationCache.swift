@@ -1,6 +1,11 @@
 import Foundation
 
-final class PinnedApplicationCache {
+protocol PinnedApplicationCaching {
+    func load() -> [PinnedApplication]?
+    func save(_ applications: [PinnedApplication])
+}
+
+final class PinnedApplicationCache: PinnedApplicationCaching {
     private static let currentVersion = 2
 
     private struct Payload: Codable {
@@ -11,6 +16,7 @@ final class PinnedApplicationCache {
     private let defaults: UserDefaults
     private let displayNameResolver: ApplicationDisplayNameResolver
     private let key = "lastValidPinnedApplications"
+    private var lastSavedApplications: [PinnedApplication]?
 
     init(
         defaults: UserDefaults = .standard,
@@ -39,6 +45,7 @@ final class PinnedApplicationCache {
                 sourceOrder: relocalized.sourceOrder
             )
         }
+        lastSavedApplications = payload.version == Self.currentVersion ? payload.applications : nil
         if payload.version < Self.currentVersion {
             save(applications)
         }
@@ -46,11 +53,13 @@ final class PinnedApplicationCache {
     }
 
     func save(_ applications: [PinnedApplication]) {
+        guard applications != lastSavedApplications else { return }
         let payload = Payload(
             version: Self.currentVersion,
             applications: applications
         )
         guard let data = try? JSONEncoder().encode(payload) else { return }
         defaults.set(data, forKey: key)
+        lastSavedApplications = applications
     }
 }

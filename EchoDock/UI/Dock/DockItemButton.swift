@@ -208,6 +208,10 @@ final class DockItemButton: NSButton, NSDraggingSource {
         ))
         failureIndicatorLayer.isHidden = true
         layer?.addSublayer(failureIndicatorLayer)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(refreshContextMenuWindowState),
+            name: .echoDockApplicationWindowStateDidChange, object: nil
+        )
     }
 
     required init?(coder: NSCoder) {
@@ -730,6 +734,21 @@ final class DockItemButton: NSButton, NSDraggingSource {
             }
         }
         return menu
+    }
+
+    @objc private func refreshContextMenuWindowState() {
+        guard let menu = activeContextMenu, let item else { return }
+        let state = contextMenuStateProvider?(item) ?? .unavailable
+        func update(_ menu: NSMenu) {
+            for menuItem in menu.items {
+                if let invocation = menuItem.representedObject as? DockItemContextMenuInvocation,
+                   invocation.action == .closeWindow {
+                    menuItem.isEnabled = state.canCloseWindow
+                }
+                if let submenu = menuItem.submenu { update(submenu) }
+            }
+        }
+        update(menu)
     }
 
     private func makeMenuNoticeItem(_ title: String) -> NSMenuItem {

@@ -323,7 +323,8 @@ final class DockPanelController {
         onItemAction: @escaping (DockItem) -> Void,
         onItemContextAction: @escaping (DockItem, DockItemContextAction) -> Void,
         contextMenuStateProvider: @escaping (DockItem) -> DockItemContextMenuState,
-        onDropRequest: @escaping (DockDropRequest) -> Bool
+        onDropRequest: @escaping (DockDropRequest) -> Bool,
+        fileUndoAction: FileUndoMenuAction? = nil
     ) {
         self.displayIdentity = descriptor.identity
         self.descriptor = descriptor
@@ -346,6 +347,7 @@ final class DockPanelController {
         contentView.onItemContextAction = onItemContextAction
         contentView.onItemContextMenuStateRequest = contextMenuStateProvider
         contentView.onDropRequest = onDropRequest
+        contentView.fileUndoAction = fileUndoAction ?? .unavailable
         contentView.onContextMenuPresentationChange = { [weak self] presented in
             guard let self else { return }
             self.isContextMenuPresented = presented

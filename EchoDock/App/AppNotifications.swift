@@ -1,6 +1,8 @@
 import Foundation
 
 extension Notification.Name {
+    static let echoDockApplicationWindowStateDidChange = Notification.Name("EchoDock.applicationWindowStateDidChange")
+    static let echoDockWindowSnapRegionsDidChange = Notification.Name("EchoDock.windowSnapRegionsDidChange")
     static let echoDockPreferencesDidChange = Notification.Name("EchoDock.preferencesDidChange")
     static let echoDockDisplayAssignmentsDidChange = Notification.Name("EchoDock.displayAssignmentsDidChange")
     static let echoDockDisplayTopologyDidChange = Notification.Name("EchoDock.displayTopologyDidChange")

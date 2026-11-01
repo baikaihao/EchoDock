@@ -380,14 +380,19 @@ final class DockModelController {
     static let systemLaunchBounceTimeout: TimeInterval = 30
     static let failureDisplayDuration: TimeInterval = 5
     static let hideVerificationDelay: TimeInterval = 0.15
+    static let metadataRefreshInterval: TimeInterval = 30
+    static let failedResolutionRetryInterval: TimeInterval = 5
 
     var onSnapshotChange: ((DockSnapshot) -> Void)?
+    var onFileUndoFailure: ((String) -> Void)?
+
+    var canUndoFileOperation: Bool { trashUndoService.canUndo }
 
     private let preferencesReader: DockPreferencesReading
     private let metadataResolver: ApplicationMetadataResolving
     private let preferenceMonitor: DockPreferenceMonitor
     private let runningMonitor: RunningApplicationMonitoring
-    private let cache: PinnedApplicationCache
+    private let cache: PinnedApplicationCaching
     private let preferences: PreferencesStore
     private let workspace: NSWorkspace
     private let activationService: RunningApplicationActivationService
@@ -397,8 +402,17 @@ final class DockModelController {
     private let fileShortcutStore: DockFileShortcutStore
     private let fileOperator: DockFileOperator
     private let trashUndoService: TrashUndoService
+    private let currentTime: () -> TimeInterval
 
     private var pinnedApplications: [PinnedApplication] = []
+    private var hasValidPinnedApplications = false
+    private var lastReadEntries: [DockPreferenceEntry]?
+    private var metadataByKey: [DockApplicationMetadataKey: PinnedApplication] = [:]
+    private var metadataRefreshTime: TimeInterval?
+    private var resolutionAttemptTime: TimeInterval?
+    private var lastResolutionSucceeded = false
+    private var cachedFinder: PinnedApplication?
+    private var hasResolvedFinder = false
     private var syncStatus: DockSyncStatus = .unavailable(L10n.text("dock.sync.notSynced"))
     private var transientStateByIdentity: [ApplicationIdentity: DockItemTransientState] = [:]
     private var launchGenerationGate = LaunchAttemptGenerationGate()
@@ -415,6 +429,8 @@ final class DockModelController {
     private var launchCompletionGenerations: [ApplicationIdentity: UInt64] = [:]
     private var revision: UInt64 = 0
     private var preferencesObserver: NSObjectProtocol?
+    private var windowActionGeneration: UInt64 = 0
+    private var windowActionFrontmostPID: pid_t?
     private(set) var snapshot: DockSnapshot = .empty
 
     init(
@@ -422,7 +438,7 @@ final class DockModelController {
         metadataResolver: ApplicationMetadataResolving = ApplicationMetadataResolver(),
         preferenceMonitor: DockPreferenceMonitor? = nil,
         runningMonitor: RunningApplicationMonitoring? = nil,
-        cache: PinnedApplicationCache = PinnedApplicationCache(),
+        cache: PinnedApplicationCaching = PinnedApplicationCache(),
         preferences: PreferencesStore,
         workspace: NSWorkspace = .shared,
         activationService: RunningApplicationActivationService? = nil,
@@ -431,7 +447,8 @@ final class DockModelController {
         isControllableRunningApplication: ((NSRunningApplication) -> Bool)? = nil,
         fileShortcutStore: DockFileShortcutStore? = nil,
         fileOperator: DockFileOperator? = nil,
-        trashUndoService: TrashUndoService? = nil
+        trashUndoService: TrashUndoService? = nil,
+        currentTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.preferencesReader = preferencesReader
         self.metadataResolver = metadataResolver
@@ -443,9 +460,7 @@ final class DockModelController {
         self.activationService = activationService
             ?? RunningApplicationActivationService(workspace: workspace)
         self.applicationWindowService = applicationWindowService
-            ?? SystemApplicationWindowService(
-                adapter: SystemApplicationWindowAccessibilityAdapter()
-            )
+            ?? BackgroundApplicationWindowService.system()
         self.runningApplicationsProvider = runningApplicationsProvider
             ?? { workspace.runningApplications }
         self.isControllableRunningApplication = isControllableRunningApplication
@@ -455,11 +470,13 @@ final class DockModelController {
         self.fileOperator = fileOperator ?? DockFileOperator(workspace: workspace)
         self.trashUndoService = trashUndoService
             ?? TrashUndoService(shortcutStore: shortcutStore)
+        self.currentTime = currentTime
     }
 
     func start() {
         if let cached = cache.load() {
             pinnedApplications = cached
+            hasValidPinnedApplications = true
             syncStatus = .cached
             publishIfNeeded()
         }
@@ -467,6 +484,7 @@ final class DockModelController {
         preferenceMonitor.onPossibleChange = { [weak self] in
             self?.refreshDockItems()
         }
+        preferenceMonitor.onMetadataInvalidation = { [weak self] in self?.refresh() }
         runningMonitor.onChange = { [weak self] in
             self?.handleRunningApplicationChange()
         }
@@ -483,14 +501,11 @@ final class DockModelController {
 
         runningMonitor.start()
         preferenceMonitor.start()
-        trashUndoService.onUndoCompletion = { [weak self] in
-            Task { @MainActor [weak self] in self?.publishIfNeeded() }
-        }
-        trashUndoService.start()
         refreshDockItems()
     }
 
     func stop() {
+        invalidateWindowActions()
         launchTimeoutWorkItems.values.forEach { $0.cancel() }
         launchTimeoutWorkItems.removeAll()
         systemLaunchTimeoutWorkItems.values.forEach { $0.cancel() }
@@ -505,9 +520,15 @@ final class DockModelController {
         systemLaunchPulseGenerations.removeAll()
         transientStateByIdentity.removeAll()
         launchGenerationGate.invalidateAll()
-        trashUndoService.stop()
-        trashUndoService.onUndoCompletion = nil
+        trashUndoService.removeAllTransactions()
         preferenceMonitor.stop()
+        preferenceMonitor.onPossibleChange = nil
+        preferenceMonitor.onMetadataInvalidation = nil
+        lastReadEntries = nil
+        metadataByKey.removeAll()
+        metadataRefreshTime = nil
+        cachedFinder = nil
+        hasResolvedFinder = false
         runningMonitor.onChange = nil
         runningMonitor.onApplicationWillLaunch = nil
         runningMonitor.stop()
@@ -518,11 +539,24 @@ final class DockModelController {
     }
 
     func refresh() {
+        fileShortcutStore.invalidateResolvedShortcuts()
         runningMonitor.reconcile()
-        refreshDockItems()
+        refreshDockItems(forceMetadataRefresh: true)
+    }
+
+    func undoLastFileOperation() {
+        let result = trashUndoService.undoLatestTransaction()
+        publishIfNeeded()
+        guard !result.failures.isEmpty else { return }
+        var messages = result.failures.prefix(5).map(\.message)
+        if result.failures.count > 5 {
+            messages.append(L10n.format("fileUndo.error.more", result.failures.count - 5))
+        }
+        onFileUndoFailure?(messages.joined(separator: "\n"))
     }
 
     func performPrimaryAction(for item: DockItem) {
+        let generation = invalidateWindowActions()
         activationService.invalidatePendingForegroundRequests()
         switch item.kind {
         case .fileShortcut(_, _, let isAvailable):
@@ -546,40 +580,86 @@ final class DockModelController {
             launchApplication(item)
         } else {
             let processIdentifiers = applications.sorted(by: preferredApplication).map(\.processIdentifier)
-            switch applicationWindowService.restoreLastMinimizedWindow(processIdentifiers: processIdentifiers) {
-            case let .restored(processIdentifier):
-                // Only foreground the instance whose remembered window was
-                // restored; another instance may currently be preferred.
-                let restoredApplications = applications.filter { $0.processIdentifier == processIdentifier }
-                _ = activationService.activateAllWindows(restoredApplications)
-                runningMonitor.reconcile()
-                return
-            case .failed:
-                showTemporaryFailure(L10n.text("dock.error.restoreWindow"), identity: item.identity)
-                return
-            case .none, .permissionDenied:
-                break
-            }
-
-            // 使用实时前台状态，避免图标快照滞后；无可见窗口时仍应恢复。
-            if activationService.hasActiveVisibleApplication(applications) {
-                switch applicationWindowService.minimizePreferredWindow(processIdentifiers: processIdentifiers) {
-                case .requested:
-                    activationService.cancelPendingReopen(applications) { [weak self] in
-                        // 若更早的打开请求晚到，只重新最小化同一个已记住的窗口。
-                        _ = self?.applicationWindowService.reapplyLastMinimization(processIdentifiers: processIdentifiers)
-                    }
-                    clearTemporaryFailure(for: item.identity)
-                    runningMonitor.reconcile()
-                case .permissionDenied:
-                    showTemporaryFailure(L10n.text("dock.error.accessibilityMinimize"), identity: item.identity)
-                case .noMinimizableWindow, .failed:
-                    showTemporaryFailure(L10n.text("dock.error.minimizeWindow"), identity: item.identity)
-                }
-            } else {
-                activateRunningApplication(item, candidates: applications)
+            let shouldMinimize = activationService.hasActiveVisibleApplication(applications)
+            applicationWindowService.restoreLastMinimizedWindow(processIdentifiers: processIdentifiers) { [weak self] result in
+                guard let self, self.isWindowActionCurrent(generation, targetProcessIdentifiers: processIdentifiers) else { return }
+                self.finishPrimaryWindowAction(result, item: item, applications: applications,
+                                               processIdentifiers: processIdentifiers, shouldMinimize: shouldMinimize, generation: generation)
             }
         }
+    }
+
+    private func finishPrimaryWindowAction(
+        _ result: ApplicationWindowRestoreResult,
+        item: DockItem,
+        applications: [NSRunningApplication],
+        processIdentifiers: [pid_t],
+        shouldMinimize: Bool,
+        generation: UInt64
+    ) {
+        switch result {
+        case let .restored(processIdentifier):
+            // Only foreground the instance whose remembered window was
+            // restored; another instance may currently be preferred.
+            let restoredApplications = applications.filter { $0.processIdentifier == processIdentifier }
+            _ = activationService.activateAllWindows(restoredApplications)
+            runningMonitor.reconcile()
+            return
+        case .failed:
+            showTemporaryFailure(L10n.text("dock.error.restoreWindow"), identity: item.identity)
+            return
+        case .none, .permissionDenied:
+            break
+        }
+
+        // 使用实时前台状态，避免图标快照滞后；无可见窗口时仍应恢复。
+        if shouldMinimize {
+            applicationWindowService.minimizePreferredWindow(processIdentifiers: processIdentifiers) { [weak self] result in
+                guard let self, self.windowActionGeneration == generation else { return }
+                self.finishMinimization(result, item: item, applications: applications,
+                                        processIdentifiers: processIdentifiers, generation: generation)
+            }
+        } else {
+            if activationService.hasActiveVisibleApplication(applications) { return }
+            activateRunningApplication(item, candidates: applications)
+        }
+    }
+
+    private func finishMinimization(
+        _ result: ApplicationWindowMinimizeResult,
+        item: DockItem,
+        applications: [NSRunningApplication],
+        processIdentifiers: [pid_t],
+        generation: UInt64
+    ) {
+        switch result {
+        case .requested:
+            activationService.cancelPendingReopen(applications) { [weak self] in
+                // 若更早的打开请求晚到，只重新最小化同一个已记住的窗口。
+                guard let self, self.windowActionGeneration == generation else { return }
+                self.applicationWindowService.reapplyLastMinimization(processIdentifiers: processIdentifiers) { _ in }
+            }
+            clearTemporaryFailure(for: item.identity)
+            runningMonitor.reconcile()
+        case .permissionDenied:
+            showTemporaryFailure(L10n.text("dock.error.accessibilityMinimize"), identity: item.identity)
+        case .noMinimizableWindow, .failed:
+            showTemporaryFailure(L10n.text("dock.error.minimizeWindow"), identity: item.identity)
+        }
+    }
+
+    @discardableResult
+    private func invalidateWindowActions() -> UInt64 {
+        windowActionGeneration &+= 1
+        windowActionFrontmostPID = workspace.frontmostApplication?.processIdentifier
+        applicationWindowService.invalidatePendingOperations()
+        return windowActionGeneration
+    }
+
+    private func isWindowActionCurrent(_ generation: UInt64, targetProcessIdentifiers: [pid_t]) -> Bool {
+        guard windowActionGeneration == generation else { return false }
+        let current = workspace.frontmostApplication?.processIdentifier
+        return current == windowActionFrontmostPID || current.map(targetProcessIdentifiers.contains) == true
     }
 
     func handleSystemApplicationWillLaunch(_ identity: ApplicationIdentity) {
@@ -634,6 +714,7 @@ final class DockModelController {
     }
 
     func performContextAction(_ action: DockItemContextAction, for item: DockItem) {
+        let generation = invalidateWindowActions()
         activationService.invalidatePendingForegroundRequests()
         cancelHideVerification(for: item.identity)
         switch action {
@@ -677,21 +758,22 @@ final class DockModelController {
                 runningMonitor.reconcile()
                 return
             }
-            switch applicationWindowService.closePreferredWindow(
-                processIdentifiers: processIdentifiers
-            ) {
+            applicationWindowService.closePreferredWindow(processIdentifiers: processIdentifiers) { [weak self] result in
+                guard let self, self.windowActionGeneration == generation else { return }
+                switch result {
             case .requested, .noClosableWindow:
                 break
             case .permissionDenied:
-                showTemporaryFailure(
+                self.showTemporaryFailure(
                     L10n.text("dock.error.accessibilityClose"),
                     identity: item.identity
                 )
             case .failed:
-                showTemporaryFailure(
+                self.showTemporaryFailure(
                     L10n.format("dock.error.unableClose", item.displayName),
                     identity: item.identity
                 )
+                }
             }
 
         case .hide:
@@ -776,12 +858,46 @@ final class DockModelController {
         }
     }
 
-    private func refreshDockItems() {
+    private func refreshDockItems(forceMetadataRefresh: Bool = false) {
         do {
             let entries = try preferencesReader.readEntries()
+            let now = currentTime()
+            // Periodic expiry also catches changes to app bundles without a
+            // matching Dock preference notification. Manual refresh bypasses it.
+            let refreshMetadata = forceMetadataRefresh
+                || (metadataRefreshTime.map { now - $0 >= Self.metadataRefreshInterval } ?? true)
+            if refreshMetadata {
+                metadataByKey.removeAll()
+                cachedFinder = nil
+                hasResolvedFinder = false
+                metadataRefreshTime = now
+            }
+            let retryFailedResolution = !lastResolutionSucceeded
+                && (resolutionAttemptTime.map { now - $0 >= Self.failedResolutionRetryInterval } ?? true)
+            if entries == lastReadEntries, !refreshMetadata, !retryFailedResolution {
+                if lastResolutionSucceeded { syncStatus = .normal }
+                publishIfNeeded()
+                return
+            }
+            lastReadEntries = entries
+            resolutionAttemptTime = now
+
+            let currentKeys = Set(entries.map(DockApplicationMetadataKey.init))
+            metadataByKey = metadataByKey.filter { currentKeys.contains($0.key) }
 
             var seenApplications = Set<ApplicationIdentity>()
-            let resolvedApplicationEntries = entries.compactMap(metadataResolver.resolve)
+            let resolvedApplicationEntries = entries.compactMap { entry -> PinnedApplication? in
+                let key = DockApplicationMetadataKey(entry)
+                guard let application = metadataByKey[key] ?? metadataResolver.resolve(entry) else { return nil }
+                metadataByKey[key] = application
+                return PinnedApplication(
+                    identity: application.identity,
+                    bundleIdentifier: application.bundleIdentifier,
+                    applicationURL: application.applicationURL,
+                    displayName: application.displayName,
+                    sourceOrder: entry.sourceOrder
+                )
+            }
             let resolvedApplications = resolvedApplicationEntries
                 .sorted { $0.sourceOrder < $1.sourceOrder }
                 .filter { application in
@@ -793,10 +909,15 @@ final class DockModelController {
                 entryCount: entries.count,
                 resolvedCount: resolvedApplicationEntries.count
             ) {
+                lastResolutionSucceeded = false
                 syncStatus = cachedApplicationsStatus(L10n.text("dock.error.parsePinnedApps"))
             } else {
+                lastResolutionSucceeded = true
+                if !hasValidPinnedApplications || pinnedApplications != resolvedApplications {
+                    cache.save(resolvedApplications)
+                }
                 pinnedApplications = resolvedApplications
-                cache.save(resolvedApplications)
+                hasValidPinnedApplications = true
                 syncStatus = .normal
             }
         } catch {
@@ -810,8 +931,10 @@ final class DockModelController {
     }
 
     private func cachedApplicationsStatus(_ message: String) -> DockSyncStatus {
+        if hasValidPinnedApplications { return .cached }
         if let cached = cache.load() {
             pinnedApplications = cached
+            hasValidPinnedApplications = true
             return .cached
         } else {
             return .unavailable(message)
@@ -819,8 +942,12 @@ final class DockModelController {
     }
 
     private func publishIfNeeded() {
+        if !hasResolvedFinder {
+            cachedFinder = metadataResolver.finderApplication()
+            hasResolvedFinder = true
+        }
         let buildResult = DockSnapshotBuilder.build(
-            finder: metadataResolver.finderApplication(),
+            finder: cachedFinder,
             pinnedApplications: pinnedApplications,
             runningApplications: runningMonitor.records,
             showRunningApplications: preferences.showRunningApplications,

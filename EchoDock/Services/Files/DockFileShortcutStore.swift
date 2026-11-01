@@ -27,10 +27,25 @@ final class DockFileShortcutStore {
     private static let defaultsKey = "thirdSection.fileShortcuts.v1"
 
     private let defaults: UserDefaults
+    private let currentTime: () -> TimeInterval
+    private let resolutionLifetime: TimeInterval
+    private var resolvedCache: [UUID: CachedResolution] = [:]
     private(set) var records: [DockFileShortcutRecord]
 
-    init(defaults: UserDefaults = .standard) {
+    private struct CachedResolution {
+        let record: DockFileShortcutRecord
+        let shortcut: ResolvedDockFileShortcut
+        let expiresAt: TimeInterval
+    }
+
+    init(
+        defaults: UserDefaults = .standard,
+        resolutionLifetime: TimeInterval = 5,
+        currentTime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    ) {
         self.defaults = defaults
+        self.resolutionLifetime = resolutionLifetime
+        self.currentTime = currentTime
         if let data = defaults.data(forKey: Self.defaultsKey),
            let decoded = try? JSONDecoder().decode([DockFileShortcutRecord].self, from: data) {
             records = decoded
@@ -43,10 +58,17 @@ final class DockFileShortcutStore {
         records.map(resolve)
     }
 
+    func invalidateResolvedShortcuts() {
+        resolvedCache.removeAll()
+    }
+
     @discardableResult
     func insert(fileURLs: [URL], at requestedIndex: Int) -> Bool {
         let normalizedURLs = uniqueFileURLs(fileURLs)
         guard !normalizedURLs.isEmpty else { return false }
+        // Explicit edits use current paths for duplicate detection, even while
+        // passive snapshots are allowed to reuse their short-lived cache.
+        invalidateResolvedShortcuts()
 
         let previousRecords = records
         var insertionIndex = min(max(0, requestedIndex), records.count)
@@ -96,6 +118,7 @@ final class DockFileShortcutStore {
         let requested = Set(shortcutIDs)
         return records.enumerated().compactMap { index, record in
             guard requested.contains(record.id) else { return nil }
+            resolvedCache.removeValue(forKey: record.id)
             let resolved = resolve(record)
             return DockShortcutRecycleSnapshot(
                 record: record,
@@ -127,10 +150,14 @@ final class DockFileShortcutStore {
     }
 
     private func resolve(_ record: DockFileShortcutRecord) -> ResolvedDockFileShortcut {
+        let now = currentTime()
+        if let cached = resolvedCache[record.id], cached.record == record, now < cached.expiresAt {
+            return cached.shortcut
+        }
         var isStale = false
         let resolvedURL = try? URL(
             resolvingBookmarkData: record.bookmark,
-            options: [.withoutUI],
+            options: [.withoutUI, .withoutMounting],
             relativeTo: nil,
             bookmarkDataIsStale: &isStale
         )
@@ -138,13 +165,15 @@ final class DockFileShortcutStore {
             .standardizedFileURL
         let isAvailable = FileManager.default.fileExists(atPath: url.path)
         let values = try? url.resourceValues(forKeys: [.nameKey, .isDirectoryKey])
-        return ResolvedDockFileShortcut(
+        let shortcut = ResolvedDockFileShortcut(
             id: record.id,
             url: url,
             displayName: values?.name ?? record.displayName,
             isDirectory: values?.isDirectory ?? record.isDirectory,
             isAvailable: isAvailable
         )
+        resolvedCache[record.id] = CachedResolution(record: record, shortcut: shortcut, expiresAt: now + resolutionLifetime)
+        return shortcut
     }
 
     private func index(of url: URL) -> Int? {
@@ -184,6 +213,8 @@ final class DockFileShortcutStore {
     }
 
     private func persist() {
+        let recordsByID = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        resolvedCache = resolvedCache.filter { recordsByID[$0.key] == $0.value.record }
         guard let data = try? JSONEncoder().encode(records) else { return }
         defaults.set(data, forKey: Self.defaultsKey)
     }

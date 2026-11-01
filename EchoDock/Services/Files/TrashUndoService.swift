@@ -1,11 +1,26 @@
-import AppKit
-import ApplicationServices
-import Carbon.HIToolbox
+import Foundation
+
+struct TrashFileIdentity: Equatable, Sendable {
+    let volume: UInt64
+    let file: UInt64
+    let creationDate: Date?
+
+    static func read(at url: URL, fileManager: FileManager) throws -> TrashFileIdentity? {
+        let attributes = try fileManager.attributesOfItem(atPath: url.path)
+        guard let volume = attributes[.systemNumber] as? NSNumber,
+              let file = attributes[.systemFileNumber] as? NSNumber else { return nil }
+        return TrashFileIdentity(
+            volume: volume.uint64Value,
+            file: file.uint64Value,
+            creationDate: attributes[.creationDate] as? Date
+        )
+    }
+}
 
 struct TrashUndoFile: Equatable, Sendable {
     let originalURL: URL
     let trashURL: URL
-    let resourceIdentifier: String?
+    let identity: TrashFileIdentity?
 }
 
 struct TrashUndoTransaction: Equatable, Sendable {
@@ -13,243 +28,136 @@ struct TrashUndoTransaction: Equatable, Sendable {
     let shortcutSnapshots: [DockShortcutRecycleSnapshot]
 }
 
+struct TrashUndoFailure: Equatable {
+    enum Reason: Equatable {
+        case missing
+        case identityChanged
+        case identityUnavailable
+        case destinationExists
+        case operationFailed(String)
+    }
+
+    let originalURL: URL
+    let reason: Reason
+
+    var message: String {
+        let detail: String
+        switch reason {
+        case .missing: detail = L10n.text("fileUndo.error.missing")
+        case .identityChanged: detail = L10n.text("fileUndo.error.identityChanged")
+        case .identityUnavailable: detail = L10n.text("fileUndo.error.identityUnavailable")
+        case .destinationExists: detail = L10n.text("fileUndo.error.destinationExists")
+        case let .operationFailed(message): detail = message
+        }
+        return L10n.format("fileUndo.error.file", originalURL.lastPathComponent, detail)
+    }
+}
+
+struct TrashUndoResult {
+    let restoredFileCount: Int
+    let failures: [TrashUndoFailure]
+}
+
+@MainActor
 final class TrashUndoService {
-    var onUndoCompletion: (() -> Void)?
-
     private let shortcutStore: DockFileShortcutStore
-    private let permissionService: AccessibilityPermissionService
-    private let stateLock = NSLock()
+    private let fileManager: FileManager
     private var transactions: [TrashUndoTransaction] = []
-    private var hasPendingTransaction = false
-    private var eventTap: CFMachPort?
-    private var eventTapSource: CFRunLoopSource?
-    private var permissionRetryTimer: Timer?
 
-    init(
-        shortcutStore: DockFileShortcutStore,
-        permissionService: AccessibilityPermissionService = AccessibilityPermissionService()
-    ) {
+    var canUndo: Bool { !transactions.isEmpty }
+
+    init(shortcutStore: DockFileShortcutStore, fileManager: FileManager = .default) {
         self.shortcutStore = shortcutStore
-        self.permissionService = permissionService
+        self.fileManager = fileManager
     }
 
-    @MainActor
-    func start() {
-        installEventTapIfPossible()
-        guard permissionRetryTimer == nil else { return }
-        let timer = Timer(
-            timeInterval: 2,
-            target: self,
-            selector: #selector(retryEventTap),
-            userInfo: nil,
-            repeats: true
-        )
-        RunLoop.main.add(timer, forMode: .common)
-        permissionRetryTimer = timer
+    func removeAllTransactions() {
+        transactions.removeAll()
     }
 
-    @MainActor
-    func stop() {
-        permissionRetryTimer?.invalidate()
-        permissionRetryTimer = nil
-        tearDownEventTap()
-        stateLock.withLock {
-            transactions.removeAll()
-            hasPendingTransaction = false
-        }
-    }
-
-    @MainActor
-    private func tearDownEventTap() {
-        if let eventTapSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), eventTapSource, .commonModes)
-        }
-        eventTapSource = nil
-        if let eventTap {
-            CGEvent.tapEnable(tap: eventTap, enable: false)
-        }
-        eventTap = nil
-    }
-
-    @MainActor
-    func record(
-        recycledURLs: [URL: URL],
-        shortcutSnapshots: [DockShortcutRecycleSnapshot]
-    ) {
+    func record(recycledURLs: [URL: URL], shortcutSnapshots: [DockShortcutRecycleSnapshot]) {
         let files = recycledURLs.map { originalURL, trashURL in
-            let identifier = try? trashURL.resourceValues(forKeys: [.fileResourceIdentifierKey])
-                .fileResourceIdentifier
-                .map(String.init(describing:))
-            return TrashUndoFile(
+            TrashUndoFile(
                 originalURL: originalURL.standardizedFileURL,
                 trashURL: trashURL.standardizedFileURL,
-                resourceIdentifier: identifier ?? nil
+                identity: try? TrashFileIdentity.read(at: trashURL, fileManager: fileManager)
             )
         }
         guard !files.isEmpty else { return }
-        let transaction = TrashUndoTransaction(
-            files: files,
-            shortcutSnapshots: shortcutSnapshots
-        )
-        stateLock.withLock {
-            transactions.append(transaction)
-            if transactions.count > 20 {
-                transactions.removeFirst(transactions.count - 20)
-            }
-            hasPendingTransaction = true
-        }
+        append(TrashUndoTransaction(files: files, shortcutSnapshots: shortcutSnapshots))
     }
 
-    @MainActor
-    func recordShortcutRemoval(_ shortcutSnapshots: [DockShortcutRecycleSnapshot]) {
-        guard !shortcutSnapshots.isEmpty else { return }
-        let transaction = TrashUndoTransaction(
-            files: [],
-            shortcutSnapshots: shortcutSnapshots
-        )
-        stateLock.withLock {
-            transactions.append(transaction)
-            if transactions.count > 20 {
-                transactions.removeFirst(transactions.count - 20)
-            }
-            hasPendingTransaction = true
-        }
+    func recordShortcutRemoval(_ snapshots: [DockShortcutRecycleSnapshot]) {
+        guard !snapshots.isEmpty else { return }
+        append(TrashUndoTransaction(files: [], shortcutSnapshots: snapshots))
     }
 
-    fileprivate func consumeCommandZIfPossible(type: CGEventType, event: CGEvent) -> Bool {
-        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            if let eventTap { CGEvent.tapEnable(tap: eventTap, enable: true) }
-            return false
-        }
-        guard type == .keyDown,
-              event.getIntegerValueField(.keyboardEventKeycode) == Int64(kVK_ANSI_Z) else {
-            return false
-        }
-
-        let flags = event.flags
-        guard flags.contains(.maskCommand),
-              !flags.contains(.maskShift),
-              !flags.contains(.maskAlternate),
-              !flags.contains(.maskControl) else {
-            return false
-        }
-
-        let shouldConsume = stateLock.withLock { () -> Bool in
-            guard hasPendingTransaction, !transactions.isEmpty else { return false }
-            hasPendingTransaction = false
-            return true
-        }
-        guard shouldConsume else { return false }
-        DispatchQueue.main.async { [weak self] in
-            self?.undoLatestTransaction()
-        }
-        return true
-    }
-
-    @MainActor
-    private func installEventTapIfPossible() {
-        if let eventTap {
-            let isHealthy = permissionService.isGranted
-                && CFMachPortIsValid(eventTap)
-                && CGEvent.tapIsEnabled(tap: eventTap)
-            if isHealthy { return }
-            tearDownEventTap()
-        }
-
-        guard permissionService.isGranted else { return }
-        let mask = CGEventMask(1) << CGEventType.keyDown.rawValue
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: echoDockTrashUndoEventTapCallback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
-        ) else { return }
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        eventTap = tap
-        eventTapSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-    }
-
-    @objc @MainActor
-    private func retryEventTap() {
-        installEventTapIfPossible()
-    }
-
-    @MainActor
-    private func undoLatestTransaction() {
-        guard let transaction = stateLock.withLock({ transactions.popLast() }) else {
-            stateLock.withLock { hasPendingTransaction = false }
-            return
+    @discardableResult
+    func undoLatestTransaction() -> TrashUndoResult {
+        guard let transaction = transactions.popLast() else {
+            return TrashUndoResult(restoredFileCount: 0, failures: [])
         }
 
         var restoredURLs: [URL: URL] = [:]
-        var failedFiles: [TrashUndoFile] = []
-        for file in transaction.files.reversed() {
+        var retryableFiles: [TrashUndoFile] = []
+        var failures: [TrashUndoFailure] = []
+        for file in transaction.files {
             do {
-                guard FileManager.default.fileExists(atPath: file.trashURL.path),
-                      !FileManager.default.fileExists(atPath: file.originalURL.path) else {
-                    failedFiles.append(file)
+                // Attributes identify the directory entry itself, including
+                // dangling symlinks that fileExists would consider missing.
+                let currentIdentity = try TrashFileIdentity.read(at: file.trashURL, fileManager: fileManager)
+                guard let expectedIdentity = file.identity, let currentIdentity else {
+                    failures.append(TrashUndoFailure(originalURL: file.originalURL, reason: .identityUnavailable))
                     continue
                 }
-                try FileManager.default.moveItem(
-                    at: file.trashURL,
-                    to: file.originalURL
-                )
+                guard currentIdentity == expectedIdentity else {
+                    failures.append(TrashUndoFailure(originalURL: file.originalURL, reason: .identityChanged))
+                    continue
+                }
+                if (try? fileManager.attributesOfItem(atPath: file.originalURL.path)) != nil {
+                    failures.append(TrashUndoFailure(originalURL: file.originalURL, reason: .destinationExists))
+                    continue
+                }
+                try fileManager.moveItem(at: file.trashURL, to: file.originalURL)
                 restoredURLs[file.originalURL] = file.originalURL
             } catch {
-                failedFiles.append(file)
+                let cocoaError = error as NSError
+                let isMissing = cocoaError.domain == NSCocoaErrorDomain
+                    && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(cocoaError.code)
+                    && (try? fileManager.attributesOfItem(atPath: file.trashURL.path)) == nil
+                let destinationExists = cocoaError.domain == NSCocoaErrorDomain
+                    && cocoaError.code == NSFileWriteFileExistsError
+                failures.append(TrashUndoFailure(
+                    originalURL: file.originalURL,
+                    reason: isMissing ? .missing
+                        : destinationExists ? .destinationExists : .operationFailed(error.localizedDescription)
+                ))
+                if !isMissing && !destinationExists { retryableFiles.append(file) }
             }
         }
 
         let restoredSnapshots = transaction.files.isEmpty
             ? transaction.shortcutSnapshots
-            : transaction.shortcutSnapshots.filter { snapshot in
-                restoredURLs[snapshot.originalURL.standardizedFileURL] != nil
-            }
+            : transaction.shortcutSnapshots.filter { restoredURLs[$0.originalURL.standardizedFileURL] != nil }
         if !restoredSnapshots.isEmpty {
             shortcutStore.restore(restoredSnapshots, restoredURLs: restoredURLs)
         }
-
-        if !failedFiles.isEmpty {
-            let failedPaths = Set(failedFiles.map { $0.originalURL.standardizedFileURL.path })
-            let failedSnapshots = transaction.shortcutSnapshots.filter {
-                failedPaths.contains($0.originalURL.standardizedFileURL.path)
-            }
-            stateLock.withLock {
-                transactions.append(TrashUndoTransaction(
-                    files: failedFiles,
-                    shortcutSnapshots: failedSnapshots
-                ))
-                hasPendingTransaction = true
-            }
-            NSSound.beep()
-        } else {
-            stateLock.withLock { hasPendingTransaction = !transactions.isEmpty }
+        if !retryableFiles.isEmpty {
+            let retryableURLs = Set(retryableFiles.map(\.originalURL))
+            append(TrashUndoTransaction(
+                files: retryableFiles,
+                shortcutSnapshots: transaction.shortcutSnapshots.filter {
+                    retryableURLs.contains($0.originalURL.standardizedFileURL)
+                }
+            ))
         }
-        onUndoCompletion?()
+        return TrashUndoResult(restoredFileCount: restoredURLs.count, failures: failures)
     }
-}
 
-private func echoDockTrashUndoEventTapCallback(
-    proxy: CGEventTapProxy,
-    type: CGEventType,
-    event: CGEvent,
-    userInfo: UnsafeMutableRawPointer?
-) -> Unmanaged<CGEvent>? {
-    guard let userInfo else { return Unmanaged.passUnretained(event) }
-    let service = Unmanaged<TrashUndoService>.fromOpaque(userInfo).takeUnretainedValue()
-    return service.consumeCommandZIfPossible(type: type, event: event)
-        ? nil
-        : Unmanaged.passUnretained(event)
-}
-
-private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
-        lock()
-        defer { unlock() }
-        return body()
+    private func append(_ transaction: TrashUndoTransaction) {
+        transactions.append(transaction)
+        if transactions.count > 20 {
+            transactions.removeFirst(transactions.count - 20)
+        }
     }
 }

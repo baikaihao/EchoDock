@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowReservationService: WindowReservationService?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var appObservers: [NSObjectProtocol] = []
+    private var isTerminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
@@ -21,6 +22,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let iconProvider = ApplicationIconProvider.shared
         iconProvider.startObservingApplicationLaunches()
         let modelController = DockModelController(preferences: preferences)
+        let fileUndoAction = FileUndoMenuAction(
+            isAvailable: { [weak modelController] in modelController?.canUndoFileOperation ?? false },
+            perform: { [weak modelController] in modelController?.undoLastFileOperation() }
+        )
+        modelController.onFileUndoFailure = { message in
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = L10n.text("fileUndo.error.title")
+            alert.informativeText = message
+            alert.addButton(withTitle: L10n.text("fileUndo.error.dismiss"))
+            alert.runModal()
+        }
         let nativeDockPolicyController = NativeDockPolicyController(preferences: preferences)
         let displayCoordinator = DisplayCoordinator(
             preferences: preferences,
@@ -36,7 +50,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onDropRequest: { [weak modelController] request in
                 modelController?.handleDrop(request) ?? false
-            }
+            },
+            fileUndoAction: fileUndoAction
         )
         let windowReservationService = WindowReservationService(
             preferences: preferences,
@@ -69,7 +84,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 modelController?.refresh()
                 displayCoordinator?.rebuildPanels()
                 nativeDockPolicyController?.reconcile()
-            }
+            },
+            fileUndoAction: fileUndoAction
         )
 
         modelController.onSnapshotChange = { [weak displayCoordinator, weak statusItemController] snapshot in
@@ -93,7 +109,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         displayCoordinator.apply(snapshot: modelController.snapshot)
         statusItemController.update(snapshot: modelController.snapshot)
         displayCoordinator.setItemAnimationsEnabled(true)
-        ThirdSectionPermissionService().presentFirstRunNoticeIfNeeded()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -107,6 +122,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workspaceObservers.removeAll()
         appObservers.forEach(NotificationCenter.default.removeObserver)
         appObservers.removeAll()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !isTerminating else { return .terminateLater }
+        isTerminating = true
+        windowReservationService?.stop {
+            DispatchQueue.main.async { sender.reply(toApplicationShouldTerminate: true) }
+        }
+        if windowReservationService == nil { return .terminateNow }
+        return .terminateLater
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

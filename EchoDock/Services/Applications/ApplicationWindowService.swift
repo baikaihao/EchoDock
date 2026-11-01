@@ -1,21 +1,21 @@
 import ApplicationServices
 import Foundation
 
-enum ApplicationWindowCloseResult: Equatable {
+enum ApplicationWindowCloseResult: Equatable, Sendable {
     case requested
     case noClosableWindow
     case permissionDenied
     case failed
 }
 
-enum ApplicationWindowMinimizeResult: Equatable {
+enum ApplicationWindowMinimizeResult: Equatable, Sendable {
     case requested
     case noMinimizableWindow
     case permissionDenied
     case failed
 }
 
-enum ApplicationWindowRestoreResult: Equatable {
+enum ApplicationWindowRestoreResult: Equatable, Sendable {
     case restored(processIdentifier: pid_t)
     case none
     case permissionDenied
@@ -26,10 +26,15 @@ enum ApplicationWindowRestoreResult: Equatable {
 protocol ApplicationWindowControlling {
     var hasAccessibilityPermission: Bool { get }
     func canCloseWindow(processIdentifiers: [pid_t]) -> Bool
-    func closePreferredWindow(processIdentifiers: [pid_t]) -> ApplicationWindowCloseResult
-    func minimizePreferredWindow(processIdentifiers: [pid_t]) -> ApplicationWindowMinimizeResult
-    func restoreLastMinimizedWindow(processIdentifiers: [pid_t]) -> ApplicationWindowRestoreResult
-    func reapplyLastMinimization(processIdentifiers: [pid_t]) -> ApplicationWindowMinimizeResult
+    func closePreferredWindow(processIdentifiers: [pid_t], completion: @escaping @MainActor (ApplicationWindowCloseResult) -> Void)
+    func minimizePreferredWindow(processIdentifiers: [pid_t], completion: @escaping @MainActor (ApplicationWindowMinimizeResult) -> Void)
+    func restoreLastMinimizedWindow(processIdentifiers: [pid_t], completion: @escaping @MainActor (ApplicationWindowRestoreResult) -> Void)
+    func reapplyLastMinimization(processIdentifiers: [pid_t], completion: @escaping @MainActor (ApplicationWindowMinimizeResult) -> Void)
+    func invalidatePendingOperations()
+}
+
+extension ApplicationWindowControlling {
+    func invalidatePendingOperations() {}
 }
 
 struct ApplicationWindowInventory<Window: Equatable> {
@@ -162,9 +167,7 @@ protocol ApplicationWindowAccessibilityAdapting {
     func restore(_ window: Window) -> ApplicationWindowPressResult
 }
 
-@MainActor
-final class ApplicationWindowService<Adapter: ApplicationWindowAccessibilityAdapting>:
-    ApplicationWindowControlling {
+final class ApplicationWindowService<Adapter: ApplicationWindowAccessibilityAdapting> {
     private let adapter: Adapter
     private var lastMinimizedWindows: [pid_t: Adapter.Window] = [:]
 
@@ -355,9 +358,14 @@ struct SystemApplicationWindowAccessibilityAdapter: ApplicationWindowAccessibili
     private static let actionTimeout: Float = 0.75
 
     private let permissionService: AccessibilityPermissionService
+    private let budget: AccessibilityOperationBudget?
 
-    init(permissionService: AccessibilityPermissionService = AccessibilityPermissionService()) {
+    init(
+        permissionService: AccessibilityPermissionService = AccessibilityPermissionService(),
+        budget: AccessibilityOperationBudget? = nil
+    ) {
         self.permissionService = permissionService
+        self.budget = budget
     }
 
     var isTrusted: Bool {
@@ -424,6 +432,8 @@ struct SystemApplicationWindowAccessibilityAdapter: ApplicationWindowAccessibili
         if axBool(closeButton, attribute: kAXEnabledAttribute) == false {
             return .failure
         }
+        guard budget?.canContinue != false else { return .cannotComplete }
+        _ = AXUIElementSetMessagingTimeout(closeButton, actionTimeout)
         switch AXUIElementPerformAction(closeButton, kAXPressAction as CFString) {
         case .success:
             return .success
@@ -462,11 +472,15 @@ struct SystemApplicationWindowAccessibilityAdapter: ApplicationWindowAccessibili
             guard axBool(button, attribute: kAXEnabledAttribute) != false else { return .failure }
             // Press the system yellow title-bar button, allowing macOS to own
             // the minimize transition and its configured Dock animation.
+            guard budget?.canContinue != false else { return .cannotComplete }
+            _ = AXUIElementSetMessagingTimeout(button, actionTimeout)
             return actionResult(AXUIElementPerformAction(button, kAXPressAction as CFString))
         }
         guard isAttributeSettable(window.element, attribute: kAXMinimizedAttribute) else {
             return .failure
         }
+        guard budget?.canContinue != false else { return .cannotComplete }
+        _ = AXUIElementSetMessagingTimeout(window.element, actionTimeout)
         return actionResult(AXUIElementSetAttributeValue(
             window.element,
             kAXMinimizedAttribute as CFString,
@@ -479,7 +493,8 @@ struct SystemApplicationWindowAccessibilityAdapter: ApplicationWindowAccessibili
               isAttributeSettable(window.element, attribute: kAXMinimizedAttribute) else {
             return .failure
         }
-        _ = AXUIElementSetMessagingTimeout(window.element, Self.actionTimeout)
+        guard budget?.canContinue != false else { return .cannotComplete }
+        _ = AXUIElementSetMessagingTimeout(window.element, actionTimeout)
         return actionResult(AXUIElementSetAttributeValue(
             window.element,
             kAXMinimizedAttribute as CFString,
@@ -496,6 +511,8 @@ struct SystemApplicationWindowAccessibilityAdapter: ApplicationWindowAccessibili
     }
 
     private func isAttributeSettable(_ element: AXUIElement, attribute: String) -> Bool {
+        guard budget?.canContinue != false else { return false }
+        _ = AXUIElementSetMessagingTimeout(element, queryTimeout)
         var isSettable = DarwinBoolean(false)
         return AXUIElementIsAttributeSettable(element, attribute as CFString, &isSettable) == .success
             && isSettable.boolValue
@@ -575,14 +592,17 @@ struct SystemApplicationWindowAccessibilityAdapter: ApplicationWindowAccessibili
         _ element: AXUIElement,
         attribute: String
     ) -> (value: CFTypeRef?, error: AXError) {
+        guard budget?.canContinue != false else { return (nil, .cannotComplete) }
+        _ = AXUIElementSetMessagingTimeout(element, queryTimeout)
         var value: CFTypeRef?
         var error = AXUIElementCopyAttributeValue(
             element,
             attribute as CFString,
             &value
         )
-        if error == .cannotComplete {
+        if error == .cannotComplete, budget?.canContinue != false {
             value = nil
+            _ = AXUIElementSetMessagingTimeout(element, queryTimeout)
             error = AXUIElementCopyAttributeValue(
                 element,
                 attribute as CFString,
@@ -590,6 +610,14 @@ struct SystemApplicationWindowAccessibilityAdapter: ApplicationWindowAccessibili
             )
         }
         return (value, error)
+    }
+
+    private var queryTimeout: Float {
+        Float(max(0.001, min(TimeInterval(Self.queryTimeout), budget?.remaining ?? .infinity)))
+    }
+
+    private var actionTimeout: Float {
+        Float(max(0.001, min(TimeInterval(Self.actionTimeout), budget?.remaining ?? .infinity)))
     }
 }
 

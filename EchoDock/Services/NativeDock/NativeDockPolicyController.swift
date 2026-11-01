@@ -11,11 +11,11 @@ final class NativeDockPolicyController {
     init(
         preferences: PreferencesStore,
         topologyProvider: DisplayTopologyProvider = DisplayTopologyProvider(),
-        nativeDockLockService: NativeDockLockService = NativeDockLockService()
+        nativeDockLockService: NativeDockLockService? = nil
     ) {
         self.preferences = preferences
         self.topologyProvider = topologyProvider
-        self.nativeDockLockService = nativeDockLockService
+        self.nativeDockLockService = nativeDockLockService ?? NativeDockLockService()
         self.nativeDockLockService.onStatusChange = { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.isStarted else { return }

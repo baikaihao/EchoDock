@@ -1,12 +1,27 @@
 import AppKit
 import CoreFoundation
 
-struct DockPreferenceEntry {
+struct DockPreferenceEntry: Equatable {
     let bundleIdentifier: String?
     let primaryURL: URL?
     let bookmarkData: Data?
     let fallbackName: String?
     let sourceOrder: Int
+}
+
+/// Ordering affects presentation, but does not require re-reading an app bundle.
+struct DockApplicationMetadataKey: Hashable {
+    let bundleIdentifier: String?
+    let primaryURL: URL?
+    let bookmarkData: Data?
+    let fallbackName: String?
+
+    init(_ entry: DockPreferenceEntry) {
+        bundleIdentifier = entry.bundleIdentifier?.lowercased()
+        primaryURL = entry.primaryURL?.standardizedFileURL
+        bookmarkData = entry.bookmarkData
+        fallbackName = entry.fallbackName
+    }
 }
 
 enum DockPreferencesError: LocalizedError {

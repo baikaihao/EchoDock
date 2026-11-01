@@ -56,7 +56,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 | 多屏程序坞 | 为每块在线、非镜像从属显示器独立启用或关闭 EchoDock，并响应显示器连接、断开和重新排列。 |
 | 单向同步系统 Dock | 自动读取系统 Dock 的固定应用与顺序，并从本机应用包加载本地化名称和图标；系统 Dock 发生增删或排序后会自动刷新，读取失败时使用上一次有效列表。 |
 | 运行中的应用 | 可在分隔线后显示“正在运行但未固定”的普通应用；所有已启用屏幕共享同一应用列表。 |
-| 第三栏与废纸篓 | 将文件或文件夹拖入 EchoDock，保存为可排序的本地快捷方式；内置废纸篓支持系统级移入废纸篓、仅移除快捷方式以及 `⌘Z` 撤销。 |
+| 第三栏与废纸篓 | 将文件或文件夹拖入 EchoDock，保存为可排序的本地快捷方式；内置废纸篓支持系统级移入废纸篓、仅移除快捷方式以及菜单中的撤销操作。 |
 | 原生感交互 | 支持底部热区、闲时隐藏与逐屏全屏自动隐藏、完整名称提示、鼠标与文件拖拽下的连续范围放大、相邻图标位移、Dock 宽度伸缩和横向滚动。 |
 | 窗口避让 | 可选地让普通最大化、左右分屏及接触屏幕底边的标准分屏窗口停在 EchoDock 上方；按显示器独立计算，仅在 EchoDock 常驻显示时生效。 |
 | 动画反馈 | 可选的应用启动弹跳与运行指示灯；未固定的运行中应用进入或退出时平滑缩放和渐显、渐隐。 |
@@ -91,7 +91,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 - 在第三栏中拖动项目可以调整顺序；点击项目会打开原文件，右键可以在 Finder 中显示或从 EchoDock 移除。
 - 将 Finder 中的文件或文件夹拖到废纸篓，会通过 macOS 将原项目移入系统废纸篓。
 - 将第三栏项目拖到废纸篓只会从 EchoDock 移除快捷方式，原文件不会被删除。
-- 授予辅助功能权限后，可按 `⌘Z` 撤销最近一次由 EchoDock 完成的移入废纸篓或快捷方式移除操作。
+- 从菜单栏菜单或 EchoDock 空白处右键菜单选择“撤销上一次文件操作”，可撤销最近一次移入废纸篓或快捷方式移除操作，无需辅助功能权限。其他应用的 `⌘Z` 不受影响。
 
 #### 悬停放大与名称提示
 
@@ -168,12 +168,11 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 - 检测原生 Dock 当前实际位于哪块显示器；
 - 尝试迁移并固定原生 Dock；
 - 调整普通最大化和贴边分屏窗口，使其为常驻显示的 EchoDock 留出空间；
-- 通过右键菜单关闭其他应用的窗口；
-- 全局捕获 `⌘Z`，撤销最近一次由 EchoDock 完成的废纸篓操作或快捷方式移除。
+- 通过右键菜单关闭其他应用的窗口。
 
 前往“设置 → 通用 → 辅助功能权限”，点击“申请辅助功能权限”，再在“系统设置 → 隐私与安全性 → 辅助功能”中允许 EchoDock。授权后重新打开设置页或右键菜单，状态会自动更新。
 
-升级后首次运行带有第三栏功能的版本时，EchoDock 也会显示一次权限说明。跳过授权不影响添加、打开、排序或移除第三栏项目，也不影响把文件移到废纸篓；仅全局 `⌘Z` 撤销不可用。
+第三栏的添加、打开、排序、移除、移入废纸篓及菜单撤销均无需辅助功能权限。恢复前会核对文件身份；项目已丢失、被替换或原位置存在冲突时，会保留现有文件并提示原因。
 
 “关闭窗口”只有在 EchoDock 已获得辅助功能权限，且目标应用确实存在可关闭窗口时才会启用。未授权时，该选项会置灰并显示“需要辅助功能权限”。
 
@@ -278,7 +277,7 @@ EchoDock adds an independent, interactive app dock to the bottom of each display
 | A Dock on every display | Enable or disable EchoDock independently on each online display that is not a secondary mirror. Display connections, disconnections, and rearrangements are detected automatically. |
 | One-way system Dock sync | Reads pinned apps and order from the system Dock, then loads localized names and icons from local app bundles. Changes are refreshed automatically, with the last valid list used as a fallback when the preferences are temporarily unavailable. |
 | Running apps | Optionally shows regular apps that are running but not pinned, separated from pinned apps by a divider. Every enabled display shares the same list. |
-| File shortcuts and Trash | Drag files or folders into EchoDock to keep sortable local shortcuts. The built-in Trash supports system recycling, shortcut-only removal, and `⌘Z` undo. |
+| File shortcuts and Trash | Drag files or folders into EchoDock to keep sortable local shortcuts. The built-in Trash supports system recycling, shortcut-only removal, and undo from the menu. |
 | Native-feeling interaction | Includes bottom-edge reveal, hiding when idle, per-display full-screen auto-hide, full item-name labels, continuous neighborhood magnification for both pointer and file drags, icon displacement, Dock width expansion, and horizontal scrolling. |
 | Maximized and tiled-window clearance | Optionally keeps ordinary maximized and bottom-edge tiled windows above EchoDock, calculated independently per display and active only while EchoDock remains visible. |
 | Motion feedback | Offers optional launch bounces and running indicators, and smoothly scales/fades unpinned running apps in and out. |
@@ -313,7 +312,7 @@ By default, EchoDock is enabled on every available display, stays visible on reg
 - Drag shortcuts within the third section to reorder them. Click to open the original item, or right-click to reveal it in Finder or remove it from EchoDock.
 - Dropping files or folders from Finder onto Trash moves the original items to the macOS Trash.
 - Dropping a third-section shortcut onto Trash only removes it from EchoDock; the original file remains untouched.
-- After granting Accessibility permission, press `⌘Z` to undo the most recent Trash or shortcut-removal operation performed by EchoDock.
+- Choose “Undo Last File Operation” from the menu bar menu or the context menu on empty Dock space to undo the most recent Trash or shortcut-removal operation. No Accessibility permission is required, and other apps retain their own `⌘Z` behavior.
 
 #### Magnification and app-name labels
 
@@ -390,12 +389,11 @@ Accessibility permission is required to:
 - detect which display actually contains the system Dock;
 - relocate and protect the system Dock in fixed mode;
 - adjust ordinary maximized and bottom-edge tiled windows so they leave room for a persistently visible EchoDock;
-- close another app's window from the context menu;
-- capture `⌘Z` globally to undo the latest Trash or shortcut-removal operation performed by EchoDock.
+- close another app's window from the context menu.
 
 Open Settings → General → Accessibility Permission, click “Request Accessibility Permission”, then allow EchoDock under System Settings → Privacy & Security → Accessibility. Reopen the Settings page or context menu after granting permission; the status updates automatically.
 
-The first launch after upgrading to a version with the third section also presents this permission explanation once. Skipping permission does not affect adding, opening, reordering, or removing shortcuts, and it does not prevent files from being moved to Trash; only global `⌘Z` undo remains unavailable.
+Adding, opening, reordering, removing, recycling, and undoing third-section items from the menu require no Accessibility permission. Before restoring an item, EchoDock verifies its identity. Missing or replaced items and conflicts at the original location are reported without replacing existing files.
 
 “Close Window” is enabled only when EchoDock has Accessibility permission and the target app has an eligible window. Without permission, the item is disabled and displays “Accessibility Permission Required”.
 
@@ -541,6 +539,16 @@ The generated app is located at:
 </details>
 
 ---
+
+## 性能与验证 / Performance and validation
+
+应用窗口操作和原生 Dock 检测在串行后台队列运行，窗口避让的 AXObserver 使用独立的后台运行循环。主线程负责界面和显示器值快照；过期查询结果会被丢弃，退出时异步等待窗口恢复。Xcode 的 Profile 动作使用 Release 配置。
+
+可重复的基准脚本、测量范围和运行方式见 [benchmarks/README.md](benchmarks/README.md)。基准分别比较刷新热路径、模拟 AX 等待时的主队列响应，以及隔离测试构建的实际空闲 CPU 和物理内存。热路径加速不等同于整机 CPU 降幅。
+
+Application window operations and native Dock detection run on serial background queues. Window reservation uses a dedicated background run loop for AXObserver. The main thread owns UI and display snapshots; stale results are discarded, and termination asynchronously waits for window restoration. Xcode's Profile action uses Release.
+
+See [benchmarks/README.md](benchmarks/README.md) for reproducible benchmarks and their limits. Refresh-path timings, simulated AX responsiveness, and actual idle process measurements are reported separately.
 
 ## License / 许可证
 

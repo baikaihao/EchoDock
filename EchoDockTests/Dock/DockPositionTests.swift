@@ -169,7 +169,8 @@ struct DockPositionViewTests {
 
     @Test(arguments: DockPosition.allCases)
     func pointerMagnifiesTheCorrectUprightIconAndKeepsTooltipDirection(position: DockPosition) async throws {
-        let (panel, content, buttons) = makeContent(position: position, count: 4, magnification: true, maximumLength: 800)
+        let clock = ManualDockAnimationClock()
+        let (panel, content, buttons) = makeContent(position: position, count: 4, magnification: true, maximumLength: 800, animationClock: clock)
         defer { content.resetInteraction(); panel.orderOut(nil) }
         let first = try #require(buttons.first)
         var tooltip: DockTooltipPresentation?
@@ -184,16 +185,24 @@ struct DockPositionViewTests {
         #expect(content.shouldReceiveMouse(at: location))
         content.reconcilePointer(screenLocation: location, allowsSyntheticEntry: true)
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while first.iconFrame(in: content).width <= 48, ContinuousClock.now < deadline {
+        while (first.iconFrame(in: content).width <= 48
+               || tooltip?.position != position
+               || tooltip?.text != first.item?.displayName),
+              ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
+            clock.advanceFrame()
         }
-        let strip = descendants(NSScrollView.self, in: content).first?.documentView
-        let states = strip.map { view in Mirror(reflecting: view).children.filter {
-            ["isPointerInside", "pointerX", "magnificationTransition", "isFrameClockRunning"].contains($0.label ?? "")
-        }.map { "\($0.label ?? ""): \($0.value)" }.joined(separator: ", ") } ?? "missing strip"
-        #expect(first.iconFrame(in: content).width > 48, "\(position): \(states)")
+        #expect(first.iconFrame(in: content).width > 48)
         #expect(tooltip?.position == position)
         #expect(tooltip?.text == first.item?.displayName)
+        for _ in 0..<20 {
+            try await Task.sleep(for: .milliseconds(10))
+            clock.advanceFrame()
+        }
+        #expect(tooltip?.position == position)
+        #expect(tooltip?.text == first.item?.displayName)
+        content.reconcilePointer(screenLocation: NSPoint(x: panel.frame.maxX + 100, y: panel.frame.maxY + 100))
+        #expect(tooltip == nil)
     }
 
     @Test(arguments: DockPosition.allCases)
@@ -260,9 +269,9 @@ struct DockPositionViewTests {
         #expect(surface.mapGenerationCount == generation)
     }
 
-    private func makeContent(position: DockPosition, count: Int, magnification: Bool, maximumLength: CGFloat)
+    private func makeContent(position: DockPosition, count: Int, magnification: Bool, maximumLength: CGFloat, animationClock: DockAnimationClock? = nil)
         -> (DockPanel, DockContentView, [DockItemButton]) {
-        let content = DockContentView()
+        let content = DockContentView(animationClock: animationClock)
         let panel = DockPanel()
         panel.contentView = DockPanelPresentationView(presentedView: content)
         let items = (0..<count).map { index in
@@ -292,4 +301,11 @@ struct DockPositionViewTests {
             ((child as? View).map { [$0] } ?? []) + descendants(type, in: child)
         }
     }
+}
+
+private final class ManualDockAnimationClock: DockAnimationClock {
+    private var onFrame: (() -> Void)?
+    func start(framesPerSecond: Int, onFrame: @escaping () -> Void) { self.onFrame = onFrame }
+    func stop() { onFrame = nil }
+    func advanceFrame() { onFrame?() }
 }

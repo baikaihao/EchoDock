@@ -12,6 +12,7 @@ final class DisplayCoordinator {
     private let onItemContextAction: (DockItem, DockItemContextAction) -> Void
     private let contextMenuStateProvider: (DockItem) -> DockItemContextMenuState
     private let onDropRequest: (DockDropRequest) -> Bool
+    private let fileUndoAction: FileUndoMenuAction
 
     private var panels: [DisplayIdentity: DockPanelController] = [:]
     private var observers: [NSObjectProtocol] = []
@@ -44,7 +45,8 @@ final class DisplayCoordinator {
         onItemAction: @escaping (DockItem) -> Void,
         onItemContextAction: @escaping (DockItem, DockItemContextAction) -> Void = { _, _ in },
         contextMenuStateProvider: @escaping (DockItem) -> DockItemContextMenuState = { _ in .unavailable },
-        onDropRequest: @escaping (DockDropRequest) -> Bool = { _ in false }
+        onDropRequest: @escaping (DockDropRequest) -> Bool = { _ in false },
+        fileUndoAction: FileUndoMenuAction? = nil
     ) {
         self.topologyProvider = topologyProvider
         self.preferences = preferences
@@ -56,6 +58,7 @@ final class DisplayCoordinator {
         self.onItemContextAction = onItemContextAction
         self.contextMenuStateProvider = contextMenuStateProvider
         self.onDropRequest = onDropRequest
+        self.fileUndoAction = fileUndoAction ?? .unavailable
     }
 
     func start() {
@@ -163,6 +166,7 @@ final class DisplayCoordinator {
                 )
             }
             self.inputCandidateMonitor.refreshNow()
+            NotificationCenter.default.post(name: .echoDockWindowSnapRegionsDidChange, object: self)
             self.isPreparingSnapshot = false
             self.prepareNextSnapshotIfNeeded()
         }
@@ -258,7 +262,8 @@ final class DisplayCoordinator {
                     onItemAction: onItemAction,
                     onItemContextAction: onItemContextAction,
                     contextMenuStateProvider: contextMenuStateProvider,
-                    onDropRequest: onDropRequest
+                    onDropRequest: onDropRequest,
+                    fileUndoAction: fileUndoAction
                 )
                 panels[display.identity] = panel
             }

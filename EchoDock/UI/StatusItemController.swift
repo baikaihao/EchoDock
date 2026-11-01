@@ -5,6 +5,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private let preferences: PreferencesStore
     private let onOpenSettings: () -> Void
     private let onRefresh: () -> Void
+    private let fileUndoAction: FileUndoMenuAction
     private let statusItem = NSStatusBar.system.statusItem(
         withLength: max(1, NSStatusBar.system.thickness - 2)
     )
@@ -16,11 +17,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     init(
         preferences: PreferencesStore,
         onOpenSettings: @escaping () -> Void,
-        onRefresh: @escaping () -> Void
+        onRefresh: @escaping () -> Void,
+        fileUndoAction: FileUndoMenuAction? = nil
     ) {
         self.preferences = preferences
         self.onOpenSettings = onOpenSettings
         self.onRefresh = onRefresh
+        self.fileUndoAction = fileUndoAction ?? .unavailable
         super.init()
         configure()
         observePreferences()
@@ -43,6 +46,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private func configure() {
+        menu.autoenablesItems = false
         if let button = statusItem.button {
             button.image = statusImage()
             button.image?.isTemplate = true
@@ -95,6 +99,8 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         menu.addItem(statusItem)
 
         menu.addItem(.separator())
+
+        menu.addItem(fileUndoAction.makeMenuItem(target: self, action: #selector(undoFileOperation)))
 
         let refreshTitle = L10n.text("statusItem.refresh")
         let refreshItem = NSMenuItem(title: refreshTitle, action: #selector(refresh), keyEquivalent: "r")
@@ -188,6 +194,10 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
     @objc private func refresh() {
         onRefresh()
+    }
+
+    @objc private func undoFileOperation() {
+        fileUndoAction.perform()
     }
 
     @objc private func openSettings() {
