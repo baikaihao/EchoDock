@@ -200,7 +200,8 @@ final class DisplayCoordinator {
                     forCocoaFrame: bodyFrame,
                     cocoaDisplayFrame: descriptor.frame,
                     accessibilityDisplayFrame: CGDisplayBounds(descriptor.displayID)
-                )
+                ),
+                position: preferences.dockPosition
             )
         }
     }

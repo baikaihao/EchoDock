@@ -6,6 +6,7 @@ struct DockLiquidGlassMapDescriptor: Equatable {
     let cornerRadius: CGFloat
     let backingScale: CGFloat
     let optics: DockLiquidGlassOptics
+    var isVertical: Bool = false
 }
 
 struct DockLiquidGlassDisplacementMap {
@@ -42,9 +43,9 @@ enum DockLiquidGlassMapRenderer {
         descriptor: DockLiquidGlassMapDescriptor
     ) -> DockLiquidGlassDisplacementMap? {
         let scale = max(1, descriptor.backingScale)
-        let heightPixels = max(1, Int(ceil(descriptor.bodyHeight * scale)))
+        let thicknessPixels = max(1, Int(ceil(descriptor.bodyHeight * scale)))
         let radiusPixels = min(
-            CGFloat(heightPixels) / 2,
+            CGFloat(thicknessPixels) / 2,
             max(0, descriptor.cornerRadius * scale)
         )
         let optics = descriptor.optics
@@ -56,7 +57,8 @@ enum DockLiquidGlassMapRenderer {
             1,
             Int(ceil(radiusPixels + refractionBand + 2))
         )
-        let widthPixels = capWidthPixels * 2 + 1
+        let widthPixels = descriptor.isVertical ? thicknessPixels : capWidthPixels * 2 + 1
+        let heightPixels = descriptor.isVertical ? capWidthPixels * 2 + 1 : thicknessPixels
         let pixelCount = widthPixels * heightPixels
         guard pixelCount > 0 else { return nil }
 
@@ -140,7 +142,10 @@ enum DockLiquidGlassMapRenderer {
         }
 
         let imageWidth = CGFloat(widthPixels)
-        let contentsCenter = CGRect(
+        let contentsCenter = descriptor.isVertical ? CGRect(
+            x: 0, y: CGFloat(capWidthPixels) / CGFloat(heightPixels),
+            width: 1, height: 1 / CGFloat(heightPixels)
+        ) : CGRect(
             x: CGFloat(capWidthPixels) / imageWidth,
             y: 0,
             width: 1 / imageWidth,

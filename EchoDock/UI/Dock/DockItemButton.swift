@@ -156,6 +156,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
     private var magnification: CGFloat = 1
     private var presenceProgress: CGFloat = 1
     private var launchBounceOffset: CGFloat = 0
+    private var dockPosition: DockPosition = .bottom
     private var visualSlotCenterOffsetX: CGFloat = 0
     private var visualSlotWidth: CGFloat?
     private var activeContextMenu: NSMenu?
@@ -417,8 +418,11 @@ final class DockItemButton: NSButton, NSDraggingSource {
         presenceProgress progress: CGFloat,
         launchBounceOffset bounceOffset: CGFloat = 0,
         visualSlotCenterOffsetX centerOffsetX: CGFloat = 0,
-        visualSlotWidth slotWidth: CGFloat? = nil
+        visualSlotWidth slotWidth: CGFloat? = nil,
+        position: DockPosition? = nil
     ) {
+        let positionChanged = position.map { $0 != dockPosition } ?? false
+        if let position { dockPosition = position }
         let clampedMagnification = min(1.80, max(1, value))
         let clampedProgress = min(1, max(0, progress))
         let clampedBounceOffset = max(0, bounceOffset)
@@ -443,7 +447,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
             alphaValue = clampedProgress
         }
         let targetFrame = magnifiedIconFrame
-        guard magnificationChanged
+        guard positionChanged || magnificationChanged
                 || presenceChanged
                 || bounceChanged
                 || centerOffsetChanged
@@ -452,13 +456,23 @@ final class DockItemButton: NSButton, NSDraggingSource {
         updatePresentationLayers()
     }
 
-    private var visualSlotFrameInBounds: NSRect {
-        let width = visualSlotWidth ?? bounds.width
+    private var canonicalSize: NSSize { dockPosition.layoutSize(for: bounds.size) }
+
+    private var canonicalSlotFrame: NSRect {
+        let width = visualSlotWidth ?? canonicalSize.width
         return NSRect(
-            x: bounds.midX + visualSlotCenterOffsetX - width / 2,
-            y: bounds.minY,
+            x: canonicalSize.width / 2 + visualSlotCenterOffsetX - width / 2,
+            y: 0,
             width: width,
-            height: bounds.height
+            height: canonicalSize.height
+        )
+    }
+
+    private var visualSlotFrameInBounds: NSRect {
+        dockPosition.viewRect(
+            canonicalSlotFrame,
+            in: canonicalSize,
+            flippedVertical: isFlipped
         )
     }
 
@@ -466,16 +480,24 @@ final class DockItemButton: NSButton, NSDraggingSource {
         let fullSide = iconSize * magnification
         let side = fullSide * presenceProgress
         let baselineInset: CGFloat = 8
-        let fullOriginY = isFlipped
-            ? bounds.maxY - baselineInset - fullSide
-            : bounds.minY + baselineInset
+        let fullOriginY = baselineInset
         let centeredOriginY = fullOriginY + (fullSide - side) / 2
-        let originY = centeredOriginY + (isFlipped ? -launchBounceOffset : launchBounceOffset)
-        return NSRect(
-            x: visualSlotFrameInBounds.midX - side / 2,
+        let originY = centeredOriginY + launchBounceOffset
+        let canonical = NSRect(
+            x: canonicalSlotFrame.midX - side / 2,
             y: originY,
             width: side,
             height: side
+        )
+        if dockPosition == .bottom, isFlipped {
+            return NSRect(x: canonical.minX, y: bounds.height - canonical.maxY, width: side, height: side)
+        }
+        // NSButton is flipped too. Match its local y direction so a side
+        // Dock's magnified neighbors move apart instead of toward each other.
+        return dockPosition.viewRect(
+            canonical,
+            in: canonicalSize,
+            flippedVertical: isFlipped
         )
     }
 
@@ -503,12 +525,13 @@ final class DockItemButton: NSButton, NSDraggingSource {
             y: targetIconBounds.midY
         )
 
-        let indicatorY = isFlipped ? bounds.maxY - 5 : bounds.minY + 1
         let targetIndicatorBounds = NSRect(x: 0, y: 0, width: 4, height: 4)
-        let targetIndicatorPosition = NSPoint(
-            x: visualSlotFrameInBounds.midX,
-            y: indicatorY + 2
+        let indicator = dockPosition.viewRect(
+            NSRect(x: canonicalSlotFrame.midX - 2, y: 1, width: 4, height: 4),
+            in: canonicalSize,
+            flippedVertical: isFlipped
         )
+        let targetIndicatorPosition = NSPoint(x: indicator.midX, y: dockPosition == .bottom && isFlipped ? bounds.maxY - 3 : indicator.midY)
         let badgeY = isFlipped
             ? targetIconFrame.minY + 2
             : targetIconFrame.maxY - 18

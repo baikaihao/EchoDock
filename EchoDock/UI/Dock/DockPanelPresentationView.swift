@@ -6,6 +6,7 @@ import QuartzCore
 final class DockPanelPresentationView: NSView {
     private static let animationKey = "echoDockVisibility"
     private static let transitionDuration: TimeInterval = 0.18
+    var position: DockPosition = .bottom { didSet { if position != oldValue { reset() } } }
     private let presentedView: NSView
     private var animationGeneration: UInt64 = 0
     private var isAnimating = false
@@ -25,7 +26,7 @@ final class DockPanelPresentationView: NSView {
     func prepareForReveal(animated: Bool, reduceMotion: Bool) {
         cancelAnimation()
         setPresentation(
-            offset: animated && !reduceMotion ? -presentedView.frame.height : 0,
+            offset: animated && !reduceMotion ? position.hiddenOffset(for: presentedView.frame.size) : .zero,
             alpha: animated ? 0 : 1
         )
     }
@@ -39,9 +40,9 @@ final class DockPanelPresentationView: NSView {
         cancelAnimation()
         let generation = animationGeneration
         if reduceMotion {
-            setPresentation(offset: 0, alpha: layer?.opacity ?? 1)
+            setPresentation(offset: .zero, alpha: layer?.opacity ?? 1)
         }
-        let targetOffset: CGFloat = visible || reduceMotion ? 0 : -presentedView.frame.height
+        let targetOffset: NSPoint = visible || reduceMotion ? .zero : position.hiddenOffset(for: presentedView.frame.size)
         let targetAlpha: Float = visible ? 1 : 0
         guard animated, let layer else {
             setPresentation(offset: targetOffset, alpha: targetAlpha)
@@ -55,10 +56,10 @@ final class DockPanelPresentationView: NSView {
         CATransaction.flush()
         let duration = Self.transitionDuration
         var animations: [CABasicAnimation] = []
-        if layer.sublayerTransform.m42 != targetOffset {
+        if layer.sublayerTransform.m41 != targetOffset.x || layer.sublayerTransform.m42 != targetOffset.y {
             let slide = CABasicAnimation(keyPath: "sublayerTransform")
             slide.fromValue = NSValue(caTransform3D: layer.sublayerTransform)
-            slide.toValue = NSValue(caTransform3D: CATransform3DMakeTranslation(0, targetOffset, 0))
+            slide.toValue = NSValue(caTransform3D: CATransform3DMakeTranslation(targetOffset.x, targetOffset.y, 0))
             slide.duration = duration
             animations.append(slide)
         }
@@ -95,7 +96,7 @@ final class DockPanelPresentationView: NSView {
 
     func reset() {
         cancelAnimation()
-        setPresentation(offset: 0, alpha: 1)
+        setPresentation(offset: .zero, alpha: 1)
     }
 
     private static func timingFunction(reversed: Bool) -> CAMediaTimingFunction {
@@ -116,19 +117,19 @@ final class DockPanelPresentationView: NSView {
         isAnimating = false
         guard let layer else { return }
         let rendered = layer.presentation() ?? layer
-        let offset = rendered.sublayerTransform.m42
+        let offset = NSPoint(x: rendered.sublayerTransform.m41, y: rendered.sublayerTransform.m42)
         let alpha = rendered.opacity
         layer.removeAnimation(forKey: Self.animationKey)
         setPresentation(offset: offset, alpha: alpha)
     }
 
-    private func setPresentation(offset: CGFloat, alpha: Float) {
+    private func setPresentation(offset: NSPoint, alpha: Float) {
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         // Keep NSView frames inside the window throughout the exit. Moving a
         // view's layout frame out of its parent can cull native glass before
         // its animation finishes. The compositor alone moves the sublayers.
-        layer?.sublayerTransform = CATransform3DMakeTranslation(0, offset, 0)
+        layer?.sublayerTransform = CATransform3DMakeTranslation(offset.x, offset.y, 0)
         layer?.opacity = alpha
         CATransaction.commit()
     }

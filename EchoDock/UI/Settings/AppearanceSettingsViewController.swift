@@ -15,6 +15,7 @@ final class AppearanceSettingsViewController: NSViewController {
     private let supportsBackgroundStyleSelection: Bool
 
     private let iconSizeSlider = NSSlider()
+    private let positionControl = NSSegmentedControl()
     private let iconSizeValue = NSTextField(labelWithString: "")
     private let iconSpacingSlider = NSSlider()
     private let iconSpacingValue = NSTextField(labelWithString: "")
@@ -93,6 +94,7 @@ final class AppearanceSettingsViewController: NSViewController {
 
     func refresh() {
         guard isViewLoaded else { return }
+        positionControl.selectedSegment = DockPosition.allCases.firstIndex(of: preferences.dockPosition) ?? 1
         iconSizeSlider.doubleValue = Double(preferences.iconSize)
         iconSizeValue.stringValue = L10n.format("format.points.oneDecimal", preferences.iconSize)
         iconSpacingSlider.doubleValue = Double(preferences.iconSpacing)
@@ -143,6 +145,14 @@ final class AppearanceSettingsViewController: NSViewController {
     }
 
     private func configureControls() {
+        positionControl.segmentCount = DockPosition.allCases.count
+        for (index, position) in DockPosition.allCases.enumerated() {
+            positionControl.setLabel(L10n.text(position.localizationKey), forSegment: index)
+        }
+        positionControl.trackingMode = .selectOne
+        positionControl.segmentStyle = .rounded
+        positionControl.target = self
+        positionControl.action = #selector(positionChanged)
         configureContinuousSlider(
             iconSizeSlider,
             minimum: 32,
@@ -242,6 +252,9 @@ final class AppearanceSettingsViewController: NSViewController {
         stack.addArrangedSubview(title)
         stack.setCustomSpacing(22, after: title)
         stack.addArrangedSubview(makeSectionLabel(L10n.text("settings.appearance.section.sizeLayout")))
+        stack.addArrangedSubview(makeRow(
+            title: L10n.text("settings.appearance.position"), control: positionControl
+        ))
         stack.addArrangedSubview(makeSliderRow(
             title: L10n.text("settings.appearance.iconSize"),
             slider: iconSizeSlider,
@@ -414,6 +427,11 @@ final class AppearanceSettingsViewController: NSViewController {
             sender.selectedSegment
         ].style
         refresh()
+    }
+
+    @objc private func positionChanged(_ sender: NSSegmentedControl) {
+        guard DockPosition.allCases.indices.contains(sender.selectedSegment) else { return }
+        preferences.dockPosition = DockPosition.allCases[sender.selectedSegment]
     }
 
     @objc private func magnificationChanged(_ sender: NSSwitch) {

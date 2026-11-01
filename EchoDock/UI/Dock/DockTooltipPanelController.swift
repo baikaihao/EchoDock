@@ -7,6 +7,7 @@ struct DockTooltipPresentation {
     let gap: CGFloat
     let screenFrame: NSRect
     let backingScaleFactor: CGFloat
+    var position: DockPosition = .bottom
 }
 
 enum DockTooltipStyle {
@@ -70,10 +71,20 @@ enum DockTooltipStyle {
 
     static func bubbleRect(
         in bounds: NSRect,
-        backingScaleFactor: CGFloat = 2
+        backingScaleFactor: CGFloat = 2,
+        position: DockPosition = .bottom
     ) -> NSRect {
         let content = visualContentRect(in: bounds)
         let inset = edgeInset(backingScaleFactor: backingScaleFactor)
+        switch position {
+        case .top:
+            return NSRect(x: content.minX + inset, y: content.minY + inset,
+                          width: max(0, content.width - inset * 2), height: max(0, content.height - tailHeight - inset))
+        case .left, .right:
+            return NSRect(x: content.minX + (position == .left ? tailHeight : inset), y: content.minY + inset,
+                          width: max(0, content.width - tailHeight - inset), height: max(0, content.height - inset * 2))
+        case .bottom: break
+        }
         return NSRect(
             x: content.minX + inset,
             y: content.minY + tailHeight,
@@ -92,11 +103,13 @@ enum DockTooltipStyle {
 
     static func labelFrame(
         in bounds: NSRect,
-        backingScaleFactor: CGFloat = 2
+        backingScaleFactor: CGFloat = 2,
+        position: DockPosition = .bottom
     ) -> NSRect {
         let body = bubbleRect(
             in: bounds,
-            backingScaleFactor: backingScaleFactor
+            backingScaleFactor: backingScaleFactor,
+            position: position
         )
         let scale = max(1, backingScaleFactor)
         let rawX = body.minX
@@ -118,8 +131,25 @@ enum DockTooltipStyle {
         gap: CGFloat,
         screenFrame: NSRect,
         panelSize: NSSize,
-        backingScaleFactor: CGFloat
+        backingScaleFactor: CGFloat,
+        position: DockPosition = .bottom
     ) -> NSPoint {
+        if position != .bottom {
+            var origin = NSPoint(
+                x: anchorScreenRect.midX - panelSize.width / 2,
+                y: anchorScreenRect.midY - (shadowInsets.bottom + (panelSize.height - shadowInsets.top - shadowInsets.bottom) / 2)
+            )
+            switch position {
+            case .top: origin.y = anchorScreenRect.minY - gap - panelSize.height + shadowInsets.top
+            case .left: origin.x = anchorScreenRect.maxX + gap - shadowInsets.left
+            case .right: origin.x = anchorScreenRect.minX - gap - panelSize.width + shadowInsets.right
+            case .bottom: break
+            }
+            let scale = max(1, backingScaleFactor)
+            origin.x = min(max(screenFrame.minX + 4, origin.x), max(screenFrame.minX + 4, screenFrame.maxX - panelSize.width - 4))
+            origin.y = min(max(screenFrame.minY + 4, origin.y), max(screenFrame.minY + 4, screenFrame.maxY - panelSize.height - 4))
+            return NSPoint(x: (origin.x * scale).rounded() / scale, y: (origin.y * scale).rounded() / scale)
+        }
         let visualWidth = max(
             0,
             panelSize.width - shadowInsets.left - shadowInsets.right
@@ -326,8 +356,9 @@ final class DockTooltipPanelController {
 
         let contentChanged = abs(
             bubbleView.renderScale - presentation.backingScaleFactor
-        ) > 0.001 || bubbleView.text != presentation.text
+        ) > 0.001 || bubbleView.text != presentation.text || bubbleView.position != presentation.position
         if contentChanged {
+            bubbleView.position = presentation.position
             bubbleView.renderScale = presentation.backingScaleFactor
             bubbleView.text = presentation.text
             cachedFittingSize = bubbleView.fittingSize
@@ -339,7 +370,8 @@ final class DockTooltipPanelController {
             gap: presentation.gap,
             screenFrame: presentation.screenFrame,
             panelSize: size,
-            backingScaleFactor: presentation.backingScaleFactor
+            backingScaleFactor: presentation.backingScaleFactor,
+            position: presentation.position
         )
         let bubbleScreenFrame = NSRect(origin: origin, size: size)
         let canvasLayout = DockTooltipCanvasLayout.make(
@@ -353,6 +385,9 @@ final class DockTooltipPanelController {
             panelOriginX: bubbleScreenFrame.minX,
             backingScaleFactor: presentation.backingScaleFactor
         )
+        if presentation.position.isVertical {
+            bubbleView.arrowX = presentation.anchorScreenRect.midY - bubbleScreenFrame.minY
+        }
         let updatePlan = DockTooltipPanelUpdatePlan.make(
             currentFrame: panel.frame,
             targetFrame: canvasLayout.canvasFrame,
@@ -459,6 +494,9 @@ final class DockTooltipPanel: NSPanel {
 }
 
 private final class DockTooltipBubbleView: NSView {
+    var position: DockPosition = .bottom {
+        didSet { if position != oldValue { frame.size = fittingSize; needsLayout = true } }
+    }
     private let bubbleLayer = CAShapeLayer()
     private let highlightLayer = CAGradientLayer()
     private let highlightMaskLayer = CAShapeLayer()
@@ -544,10 +582,12 @@ private final class DockTooltipBubbleView: NSView {
                 + edgeInset * 2
         )
         return NSSize(
-            width: visualWidth
+            width: visualWidth + (position.isVertical ? DockTooltipStyle.tailHeight : 0)
                 + DockTooltipStyle.shadowInsets.left
                 + DockTooltipStyle.shadowInsets.right,
-            height: DockTooltipStyle.totalHeight
+            height: position.isVertical
+                ? DockTooltipStyle.totalHeight - DockTooltipStyle.tailHeight + edgeInset * 2
+                : DockTooltipStyle.totalHeight
         )
     }
 
@@ -555,7 +595,8 @@ private final class DockTooltipBubbleView: NSView {
         super.layout()
         label.frame = DockTooltipStyle.labelFrame(
             in: bounds,
-            backingScaleFactor: renderScale
+            backingScaleFactor: renderScale,
+            position: position
         )
         label.layer?.contentsScale = renderScale
         updateBubbleLayer()
@@ -573,28 +614,40 @@ private final class DockTooltipBubbleView: NSView {
             return
         }
 
-        let bubbleRect = DockTooltipStyle.bubbleRect(
+        let physicalBody = DockTooltipStyle.bubbleRect(
             in: bounds,
-            backingScaleFactor: renderScale
+            backingScaleFactor: renderScale,
+            position: position
         )
-        let cornerRadius = bubbleRect.height / 2
+        let canonicalSize = position.layoutSize(for: bounds.size)
+        let bubbleRect = position.layoutRect(physicalBody, in: canonicalSize)
+        let visual = DockTooltipStyle.visualContentRect(in: bounds)
+        let inset = DockTooltipStyle.edgeInset(backingScaleFactor: renderScale)
+        let tip: NSPoint
+        switch position {
+        case .bottom: tip = NSPoint(x: arrowX, y: visual.minY + inset)
+        case .top: tip = NSPoint(x: arrowX, y: visual.maxY - inset)
+        case .left: tip = NSPoint(x: visual.minX + inset, y: arrowX)
+        case .right: tip = NSPoint(x: visual.maxX - inset, y: arrowX)
+        }
+        let canonicalTip = position.layoutPoint(tip, in: canonicalSize)
+        let cornerRadius = min(bubbleRect.height / 2, (bubbleRect.width - DockTooltipStyle.tailHalfWidth * 2) / 2)
         let tailCenter = min(
             max(
-                arrowX,
+                canonicalTip.x,
                 bubbleRect.minX + cornerRadius + DockTooltipStyle.tailHalfWidth
             ),
             bubbleRect.maxX - cornerRadius - DockTooltipStyle.tailHalfWidth
         )
-        let path = continuousBubblePath(
+        let canonicalPath = continuousBubblePath(
             in: bubbleRect,
             cornerRadius: cornerRadius,
             tailCenter: tailCenter,
             tailHalfWidth: DockTooltipStyle.tailHalfWidth,
-            tailTipY: DockTooltipStyle.tailTipY(
-                in: bounds,
-                backingScaleFactor: renderScale
-            )
+            tailTipY: canonicalTip.y
         )
+        var transform = position.viewTransform(in: canonicalSize)
+        let path = canonicalPath.copy(using: &transform) ?? canonicalPath
 
         CATransaction.begin()
         CATransaction.setDisableActions(true)

@@ -37,14 +37,15 @@ struct DockFileDragRegionTests {
         #expect(region.interactionLocation(for: point) == point)
     }
 
-    @Test @MainActor
-    func draggingBelowPanelKeepsItsSizeAndLabelUntilLeavingBothWindows() throws {
+    @Test(arguments: DockPosition.allCases) @MainActor
+    func draggingBelowPanelKeepsItsSizeAndLabelUntilLeavingBothWindows(position: DockPosition) throws {
         let suite = "DockFileDragRegionTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let preferences = PreferencesStore(defaults: defaults)
         preferences.isEnabled = true
         preferences.autoHide = false
+        preferences.dockPosition = position
         preferences.magnificationEnabled = false
         let descriptor = DisplayDescriptor(
             identity: DisplayIdentity(rawValue: suite), displayID: 0,
@@ -78,7 +79,10 @@ struct DockFileDragRegionTests {
         content.onTooltipPresentation = { labels.append($0?.text) }
         let drag = FileDragInfo(window: panel)
         defer { drag.draggingPasteboard.releaseGlobally() }
-        drag.draggingLocation = NSPoint(x: panel.frame.width / 2, y: 20)
+        let canonicalSize = position.layoutSize(for: panel.frame.size)
+        drag.draggingLocation = position.viewRect(
+            NSRect(x: canonicalSize.width / 2, y: 20, width: 0, height: 0), in: canonicalSize
+        ).origin
         _ = content.draggingEntered(drag)
         let lockedSize = content.frame.size
         #expect(labels.last == .some(item.displayName))
@@ -91,7 +95,13 @@ struct DockFileDragRegionTests {
         drag.draggingDestinationWindow = receiver
 
         for offset in [CGFloat(5), 2, 0, 3, 5, 0] {
-            let point = NSPoint(x: panel.frame.midX, y: descriptor.frame.minY + offset)
+            let point: NSPoint
+            switch position {
+            case .bottom: point = NSPoint(x: panel.frame.midX, y: descriptor.frame.minY + offset)
+            case .top: point = NSPoint(x: panel.frame.midX, y: descriptor.frame.maxY - offset)
+            case .left: point = NSPoint(x: descriptor.frame.minX + offset, y: panel.frame.midY)
+            case .right: point = NSPoint(x: descriptor.frame.maxX - offset, y: panel.frame.midY)
+            }
             let beforeGlobalSample = labels.count
             controller.processMouse(location: point, pressedButtons: 1, now: Date(), isFileDrag: true)
             #expect(content.frame.size == lockedSize)
@@ -107,8 +117,10 @@ struct DockFileDragRegionTests {
         // not clear again as physical and application drag samples alternate.
         #expect(labels.filter { $0 == nil }.count == initialLabelClearCount)
 
+        let size = position.layoutSize(for: panel.frame.size)
+        let outside = position.viewRect(NSRect(x: size.width / 2, y: size.height + 100, width: 0, height: 0), in: size).origin
         controller.processMouse(
-            location: NSPoint(x: panel.frame.midX, y: panel.frame.maxY + 100),
+            location: panel.convertPoint(toScreen: outside),
             pressedButtons: 1, now: Date(), isFileDrag: true
         )
         #expect(content.frame.size != lockedSize)

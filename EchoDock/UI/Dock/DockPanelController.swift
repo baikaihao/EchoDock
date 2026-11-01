@@ -254,6 +254,20 @@ final class DockPanelController {
     // NSEvent.mouseLocation. Keep the last delivered sample for delayed edge
     // decisions so a stationary pointer remains at the edge it entered.
     private var latestPointerSample: (location: CGPoint, pressedButtons: Int)?
+    private var appliedPosition: DockPosition?
+    private var pendingPanelResize: DispatchWorkItem?
+    private var isReconcilingPointer = false
+
+    private var position: DockPosition { preferences.dockPosition }
+    private var topInset: CGFloat {
+        guard let screen = NSScreen.screens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == descriptor.displayID
+        }) else { return 0 }
+        return max(screen.safeAreaInsets.top, screen.frame.maxY - screen.visibleFrame.maxY)
+    }
+    private var maximumPanelLength: CGFloat {
+        max(160, (position.isVertical ? descriptor.frame.height - topInset : descriptor.frame.width) - 24)
+    }
 
     private var presentationMode: DockPanelPresentationMode {
         DockPanelPresentationPolicy.mode(
@@ -317,6 +331,14 @@ final class DockPanelController {
         let contentView = DockContentView(iconProvider: iconProvider)
         self.contentView = contentView
         self.presentationView = DockPanelPresentationView(presentedView: contentView)
+        contentView.screenLocationNormalizer = { [weak self] point in
+            guard let self else { return point }
+            return self.position.normalizedLocation(
+                point,
+                display: self.descriptor.frame,
+                panel: self.panel.frame
+            )
+        }
         contentView.fileDragRegionProvider = { [weak self] in
             self?.fileDragRegion
         }
@@ -340,9 +362,9 @@ final class DockPanelController {
             }
             self.tooltipPanelController.present(presentation)
         }
-        contentView.onPreferredSizeChange = { [weak self] size in
+        contentView.onPreferredSizeChange = { [weak self] _ in
             guard let self, !self.isFileDragDestinationActive else { return }
-            self.resizePanel(to: size)
+            self.schedulePanelResize()
         }
         contentView.onLaunchBounceActivityChange = { [weak self] isActive in
             guard let self else { return }
@@ -509,6 +531,10 @@ final class DockPanelController {
     }
 
     func applyPreferences() {
+        if appliedPosition != position {
+            forceHideImmediately()
+            appliedPosition = position
+        }
         applyLayout()
         reconcilePresentationMode(animated: true)
     }
@@ -541,10 +567,10 @@ final class DockPanelController {
             || isFileDragCaptureActive
         let hasPotentialPointerDrag = pressedButtons != 0
         let shouldHoldForDrag = hasActiveFileDrag || hasPotentialPointerDrag
-        let interactionLocation = DockBottomInteractionGeometry.normalizedLocation(
+        let interactionLocation = position.normalizedLocation(
             location,
-            displayFrame: descriptor.frame,
-            panelFrame: panel.frame
+            display: descriptor.frame,
+            panel: panel.frame
         )
         var allowsSyntheticPointerEntry = false
         if panel.isVisible, hasPotentialPointerDrag {
@@ -610,7 +636,7 @@ final class DockPanelController {
             if hotZoneEnteredAt == nil {
                 hotZoneEnteredAt = now
             }
-            let requiredDelay = isInternalBottomEdge(atX: location.x) ? preferences.internalEdgeDelay : 0
+            let requiredDelay = isInternalEdge(at: location) ? preferences.internalEdgeDelay : 0
             let elapsed = now.timeIntervalSince(hotZoneEnteredAt ?? now)
             if shouldHoldForDrag || elapsed >= requiredDelay {
                 show(always: false, animated: true)
@@ -624,11 +650,11 @@ final class DockPanelController {
                 resetHideTracking()
                 return
             }
-            let holdRegion = DockBottomInteractionGeometry.visibleHoldRegion(
-                panelFrame: panel.frame,
-                displayFrame: descriptor.frame
+            let holdRegion = position.holdRegion(
+                panel: panel.frame,
+                display: descriptor.frame
             )
-            if holdRegion.contains(location) {
+            if holdRegion.insetBy(dx: -0.001, dy: -0.001).contains(location) {
                 resetHideTracking()
             } else {
                 if mouseLeftAt == nil { mouseLeftAt = now }
@@ -647,6 +673,8 @@ final class DockPanelController {
     }
 
     func destroy() {
+        pendingPanelResize?.cancel()
+        pendingPanelResize = nil
         animationGeneration &+= 1
         fileDragCaptureRevision &+= 1
         resetHotZoneTracking()
@@ -684,7 +712,8 @@ final class DockPanelController {
         animatedRemovalIdentities: Set<ApplicationIdentity> = [],
         launchBounceAnimationsEnabled: Bool = false
     ) {
-        let maximumWidth = max(160, descriptor.frame.width - 24)
+        let maximumWidth = maximumPanelLength
+        presentationView.position = position
         contentView.apply(
             snapshot: snapshot,
             iconSize: preferences.iconSize,
@@ -700,7 +729,8 @@ final class DockPanelController {
             animatedInsertionIdentities: animatedInsertionIdentities,
             animatedRemovalIdentities: animatedRemovalIdentities,
             launchBounceAnimationsEnabled: launchBounceAnimationsEnabled,
-            runningIndicatorsEnabled: preferences.runningIndicatorsEnabled
+            runningIndicatorsEnabled: preferences.runningIndicatorsEnabled,
+            position: position
         )
         let size = contentView.frame.size
         let shouldDisplay = panel.isVisible
@@ -708,12 +738,7 @@ final class DockPanelController {
             contentView.needsLayout = true
             contentView.layoutSubtreeIfNeeded()
         } else {
-            let originX = descriptor.frame.midX - size.width / 2
-            let origin = NSPoint(
-                x: originX,
-                y: descriptor.frame.minY + 6
-            )
-            panel.setFrame(NSRect(origin: origin, size: size), display: false)
+            panel.setFrame(position.panelFrame(size: size, display: descriptor.frame, topInset: topInset), display: false)
         }
         if shouldDisplay, state.allowsTooltipPresentation {
             reconcileCurrentPointer()
@@ -808,6 +833,8 @@ final class DockPanelController {
     }
 
     private func forceHideImmediately() {
+        pendingPanelResize?.cancel()
+        pendingPanelResize = nil
         animationGeneration &+= 1
         resetHotZoneTracking()
         resetHideTracking()
@@ -828,14 +855,16 @@ final class DockPanelController {
     }
 
     private func reconcileCurrentPointer() {
-        guard panel.isVisible,
+        guard !isReconcilingPointer, panel.isVisible,
               currentPressedMouseButtons == 0,
               !isFileDragDestinationActive,
               !isFileDragCaptureActive else { return }
-        let location = DockBottomInteractionGeometry.normalizedLocation(
+        isReconcilingPointer = true
+        defer { isReconcilingPointer = false }
+        let location = position.normalizedLocation(
             currentPointerLocation,
-            displayFrame: descriptor.frame,
-            panelFrame: panel.frame
+            display: descriptor.frame,
+            panel: panel.frame
         )
         let allowsEntry = contentView.shouldReceiveMouse(at: location)
         contentView.reconcilePointer(
@@ -880,7 +909,7 @@ final class DockPanelController {
         if hotZoneEnteredAt == nil {
             hotZoneEnteredAt = now
         }
-        let requiredDelay = isInternalBottomEdge(atX: location.x)
+        let requiredDelay = isInternalEdge(at: location)
             ? preferences.internalEdgeDelay
             : 0
         let elapsed = now.timeIntervalSince(hotZoneEnteredAt ?? now)
@@ -923,11 +952,11 @@ final class DockPanelController {
         }
 
         let location = currentPointerLocation
-        let holdRegion = DockBottomInteractionGeometry.visibleHoldRegion(
-            panelFrame: panel.frame,
-            displayFrame: descriptor.frame
+        let holdRegion = position.holdRegion(
+            panel: panel.frame,
+            display: descriptor.frame
         )
-        guard !holdRegion.contains(location) else {
+        guard !holdRegion.insetBy(dx: -0.001, dy: -0.001).contains(location) else {
             resetHideTracking()
             return
         }
@@ -945,10 +974,9 @@ final class DockPanelController {
     }
 
     private func isInHotZone(_ location: CGPoint) -> Bool {
-        DockBottomInteractionGeometry.containsBottomEdgeHotZone(
-            location,
-            displayFrame: descriptor.frame
-        )
+        let zone = position.hotZone(in: descriptor.frame)
+        return location.x >= zone.minX && location.x <= zone.maxX
+            && location.y >= zone.minY && location.y <= zone.maxY
     }
 
     private var currentPointerLocation: CGPoint {
@@ -959,15 +987,22 @@ final class DockPanelController {
         latestPointerSample?.pressedButtons ?? NSEvent.pressedMouseButtons
     }
 
+    private func schedulePanelResize() {
+        guard pendingPanelResize == nil else { return }
+        // A preferred-size change may originate inside strip.layout(). Never
+        // resize the window (and reenter pointer/layout) on that call stack.
+        let item = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingPanelResize = nil
+            self.resizePanel(to: self.contentView.frame.size)
+        }
+        pendingPanelResize = item
+        DispatchQueue.main.async(execute: item)
+    }
+
     private func resizePanel(to size: NSSize) {
         guard size.width > 0, size.height > 0 else { return }
-        let originX = descriptor.frame.midX - size.width / 2
-        let targetFrame = NSRect(
-            x: originX,
-            y: descriptor.frame.minY + 6,
-            width: size.width,
-            height: size.height
-        )
+        let targetFrame = position.panelFrame(size: size, display: descriptor.frame, topInset: topInset)
         guard !NSEqualRects(panel.frame, targetFrame) else { return }
         let shouldDisplay = panel.isVisible
         panel.setFrame(targetFrame, display: false)
@@ -975,9 +1010,9 @@ final class DockPanelController {
             contentView.needsLayout = true
             contentView.layoutSubtreeIfNeeded()
         }
-        if shouldDisplay, state.allowsTooltipPresentation {
-            reconcileCurrentPointer()
-        }
+        // Headroom changes keep the strip's main-axis pointer target stable.
+        // Re-hit-testing here feeds the new window geometry back into hover
+        // and can alternate between expanded and resting sizes indefinitely.
         if shouldDisplay {
             panel.displayIfNeeded()
         }
@@ -1022,36 +1057,37 @@ final class DockPanelController {
     }
 
     private var fileDragReceiverFrame: NSRect {
-        let maximumWidth = max(160, descriptor.frame.width - 24)
         let iconSpacing = min(28, max(4, preferences.iconSpacing))
         let reservedWidth = min(
-            maximumWidth,
-            panel.frame.width + preferences.iconSize + iconSpacing
+            maximumPanelLength,
+            position.layoutSize(for: panel.frame.size).width + preferences.iconSize + iconSpacing
         )
-        let bodyTop = panel.frame.minY
-            + min(contentView.dockBodyHeight, panel.frame.height)
-        return NSRect(
-            x: descriptor.frame.midX - reservedWidth / 2,
-            y: descriptor.frame.minY,
-            width: reservedWidth,
-            height: max(1, bodyTop - descriptor.frame.minY)
+        var frame = position.panelFrame(
+            size: position.layoutSize(for: NSSize(width: reservedWidth, height: contentView.dockBodyHeight)),
+            display: descriptor.frame, topInset: topInset
         )
+        switch position {
+        case .bottom: frame.size.height = frame.maxY - descriptor.frame.minY; frame.origin.y = descriptor.frame.minY
+        case .top: frame.size.height = descriptor.frame.maxY - frame.minY
+        case .left: frame.size.width = frame.maxX - descriptor.frame.minX; frame.origin.x = descriptor.frame.minX
+        case .right: frame.size.width = descriptor.frame.maxX - frame.minX
+        }
+        return frame
     }
 
     private var fileDragRegion: DockFileDragRegion {
         DockFileDragRegion(
             panelFrame: panel.frame,
             receiverFrame: isFileDragCaptureActive && dragReceiverPanel.isVisible
-                ? dragReceiverPanel.frame : nil
+                ? dragReceiverPanel.frame : nil,
+            position: position
         )
     }
 
-    private func isInternalBottomEdge(atX x: CGFloat) -> Bool {
+    private func isInternalEdge(at location: NSPoint) -> Bool {
         allDisplays.contains { other in
             guard other.identity != descriptor.identity else { return false }
-            let verticallyAdjacent = abs(other.frame.maxY - descriptor.frame.minY) <= 1
-            let horizontallyOverlapping = x >= other.frame.minX && x <= other.frame.maxX
-            return verticallyAdjacent && horizontallyOverlapping
+            return position.sharesEdge(at: location, display: descriptor.frame, other: other.frame)
         }
     }
 }

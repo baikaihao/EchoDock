@@ -32,11 +32,14 @@ final class DockContentView: NSView {
     var onFileDragActivityChange: ((Bool) -> Void)?
     var onDropRequest: ((DockDropRequest) -> Bool)?
     var fileDragRegionProvider: (() -> DockFileDragRegion?)?
+    var screenLocationNormalizer: ((NSPoint) -> NSPoint)?
 
     private let backgroundView = DockBackgroundSurfaceView()
     private let scrollView = HorizontalDockScrollView()
     private let stripView = DockStripView()
     private let iconProvider: ApplicationIconProvider
+    private var position: DockPosition = .bottom
+    private var layoutSize: NSSize { position.layoutSize(for: bounds.size) }
 
     private(set) var dockBodyHeight: CGFloat = 72
     private(set) var preferredWidth: CGFloat = 160
@@ -80,6 +83,9 @@ final class DockContentView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         clipsToBounds = false
+        stripView.screenLocationNormalizer = { [weak self] point in
+            self?.screenLocationNormalizer?(point) ?? point
+        }
 
         backgroundView.configure(
             transparency: backgroundTransparency,
@@ -166,8 +172,13 @@ final class DockContentView: NSView {
         animatedInsertionIdentities: Set<ApplicationIdentity> = [],
         animatedRemovalIdentities: Set<ApplicationIdentity> = [],
         launchBounceAnimationsEnabled: Bool = false,
-        runningIndicatorsEnabled: Bool = true
+        runningIndicatorsEnabled: Bool = true,
+        position: DockPosition = .bottom
     ) {
+        if self.position != position { cancelFileDrag() }
+        self.position = position
+        stripView.position = position
+        scrollView.position = position
         var effectiveAnimatedRemovalIdentities = animatedRemovalIdentities
         let wasLaunchBounceActive = isLaunchBounceActive
         self.iconSize = iconSize
@@ -234,7 +245,7 @@ final class DockContentView: NSView {
         preferredWidth = targetPreferredWidth
         preferredHeight = targetPreferredHeight
         frame.size = fileDragLockedSize
-            ?? NSSize(width: preferredWidth, height: preferredHeight)
+            ?? position.layoutSize(for: NSSize(width: preferredWidth, height: preferredHeight))
         needsLayout = true
         layoutSubtreeIfNeeded()
         if isLaunchBounceActive != wasLaunchBounceActive {
@@ -340,27 +351,27 @@ final class DockContentView: NSView {
         }
         let activeHeadroom = min(
             maximumActiveHeadroom,
-            max(0, bounds.height - dockBodyHeight)
+            max(0, layoutSize.height - dockBodyHeight)
         )
         let stripHeight = max(0, dockBodyHeight - 8 + activeHeadroom)
-        backgroundView.setHostedContentFrame(NSRect(
+        backgroundView.setHostedContentFrame(position.viewRect(NSRect(
             x: 10,
             y: 4,
-            width: max(0, bounds.width - 20),
+            width: max(0, layoutSize.width - 20),
             height: stripHeight
-        ))
+        ), in: layoutSize))
         stripView.frame = NSRect(
             x: 0,
             y: 0,
-            width: max(stripView.requiredWidth, scrollView.contentSize.width),
-            height: stripHeight
+            width: position.isVertical ? stripHeight : max(stripView.requiredWidth, scrollView.contentSize.width),
+            height: position.isVertical ? max(stripView.requiredWidth, scrollView.contentSize.height) : stripHeight
         )
-        let dockBodyFrame = NSRect(
+        let dockBodyFrame = position.viewRect(NSRect(
             x: 0,
             y: 0,
-            width: bounds.width,
-            height: min(dockBodyHeight, bounds.height)
-        )
+            width: layoutSize.width,
+            height: min(dockBodyHeight, layoutSize.height)
+        ), in: layoutSize)
         stripView.dockBodyFrame = convert(dockBodyFrame, to: stripView)
         stripView.needsLayout = true
         stripView.layoutSubtreeIfNeeded()
@@ -416,7 +427,8 @@ final class DockContentView: NSView {
             return
         }
 
-        let pointInWindow = window.convertPoint(fromScreen: screenLocation)
+        let location = screenLocationNormalizer?(screenLocation) ?? screenLocation
+        let pointInWindow = window.convertPoint(fromScreen: location)
         let pointInStrip = stripView.convert(pointInWindow, from: nil)
         if !stripView.reconcilePointer(
             at: pointInStrip,
@@ -429,7 +441,8 @@ final class DockContentView: NSView {
 
     func shouldReceiveMouse(at screenLocation: NSPoint) -> Bool {
         guard let window, window.isVisible else { return false }
-        let pointInWindow = window.convertPoint(fromScreen: screenLocation)
+        let location = screenLocationNormalizer?(screenLocation) ?? screenLocation
+        let pointInWindow = window.convertPoint(fromScreen: location)
         let pointInContent = convert(pointInWindow, from: nil)
         let bodyFrame = backgroundBodyFrame
         let iconFrames = stripView.visibleIconFrames.map {
@@ -472,7 +485,8 @@ final class DockContentView: NSView {
                 anchorScreenRect: anchorScreenRect,
                 gap: tooltipGap,
                 screenFrame: screen?.frame ?? anchorScreenRect,
-                backingScaleFactor: screen?.backingScaleFactor ?? window.backingScaleFactor
+                backingScaleFactor: screen?.backingScaleFactor ?? window.backingScaleFactor,
+                position: position
             )
         )
     }
@@ -560,6 +574,8 @@ final class DockContentView: NSView {
             clearFileDrag()
             return []
         }
+        let sourceWindow = sender.draggingDestinationWindow ?? window
+        let sampledScreenLocation = sourceWindow?.convertPoint(toScreen: sender.draggingLocation)
         setFileDragActive(true)
         let sourceShortcutIDs = Set(payload.sourceShortcutIDs)
         if sourceShortcutIDs != draggedShortcutIDs {
@@ -569,7 +585,7 @@ final class DockContentView: NSView {
                 stripView.layoutSubtreeIfNeeded()
             }
         }
-        let pointInStrip = fileDragLocationInStrip(for: sender)
+        let pointInStrip = fileDragLocationInStrip(for: sender, sampledScreenLocation: sampledScreenLocation)
         let destination = resolvedDropDestination(at: pointInStrip)
         let operation = dragOperation(
             for: destination,
@@ -728,23 +744,23 @@ final class DockContentView: NSView {
         stripView.setFileDragActive(active)
 
         if active {
-            let currentWidth = max(frame.width, max(preferredWidth, targetPreferredWidth))
+            let currentWidth = max(layoutSize.width, max(preferredWidth, targetPreferredWidth))
             let reservedWidth = min(maxWidth, currentWidth + iconSize + iconSpacing)
-            let lockedSize = NSSize(
+            let lockedSize = position.layoutSize(for: NSSize(
                 width: reservedWidth,
                 height: max(
-                    frame.height,
+                    layoutSize.height,
                     preferredHeight,
                     dockBodyHeight + maximumMagnificationHeadroom
                 )
-            )
+            ))
             fileDragLockedSize = lockedSize
             frame.size = lockedSize
         } else {
             fileDragLockedSize = nil
             preferredWidth = targetPreferredWidth
             preferredHeight = targetPreferredHeight
-            frame.size = NSSize(width: preferredWidth, height: preferredHeight)
+            frame.size = position.layoutSize(for: NSSize(width: preferredWidth, height: preferredHeight))
         }
         needsLayout = true
         layoutSubtreeIfNeeded()
@@ -766,11 +782,11 @@ final class DockContentView: NSView {
             layoutSubtreeIfNeeded()
             return
         }
-        frame.size = NSSize(width: targetWidth, height: targetHeight)
+        frame.size = position.layoutSize(for: NSSize(width: targetWidth, height: targetHeight))
         needsLayout = true
         layoutSubtreeIfNeeded()
         if changed {
-            onPreferredSizeChange?(NSSize(width: targetWidth, height: targetHeight))
+            onPreferredSizeChange?(frame.size)
         }
     }
 
@@ -789,14 +805,14 @@ final class DockContentView: NSView {
         return cachedDraggingPayload
     }
 
-    private func fileDragLocationInStrip(for sender: NSDraggingInfo) -> NSPoint {
+    private func fileDragLocationInStrip(for sender: NSDraggingInfo, sampledScreenLocation: NSPoint? = nil) -> NSPoint {
         let pointInContent: NSPoint
         if let window {
             // The sender may belong to the separate receiver below the Dock.
             // Convert its event sample through that window rather than mixing
             // it with a newer NSEvent.mouseLocation sample.
             let destinationWindow = sender.draggingDestinationWindow ?? window
-            let screenLocation = destinationWindow.convertPoint(
+            let screenLocation = sampledScreenLocation ?? destinationWindow.convertPoint(
                 toScreen: sender.draggingLocation
             )
             let interactionLocation = fileDragRegionProvider?()?
@@ -992,9 +1008,9 @@ final class DockContentView: NSView {
             layoutSubtreeIfNeeded()
             return
         }
-        frame.size.height = targetHeight
+        frame.size = position.layoutSize(for: NSSize(width: preferredWidth, height: targetHeight))
         needsLayout = true
-        onPreferredSizeChange?(NSSize(width: preferredWidth, height: targetHeight))
+        onPreferredSizeChange?(frame.size)
     }
 
     private func updatePreferredWidthFromStrip() {
@@ -1007,10 +1023,10 @@ final class DockContentView: NSView {
             layoutSubtreeIfNeeded()
             return
         }
-        frame.size.width = targetWidth
+        frame.size = position.layoutSize(for: NSSize(width: targetWidth, height: preferredHeight))
         needsLayout = true
         layoutSubtreeIfNeeded()
-        onPreferredSizeChange?(NSSize(width: targetWidth, height: preferredHeight))
+        onPreferredSizeChange?(frame.size)
     }
 
     private var targetPreferredWidth: CGFloat {
@@ -1022,10 +1038,16 @@ final class DockContentView: NSView {
     }
 
     private var maximumActiveHeadroom: CGFloat {
+        // Keep the screen-facing edge stable while magnifying at the other
+        // three edges. Resizing this canvas mid-hover shifts the icons before
+        // the panel can catch up, especially at the top and right edges.
+        let magnificationHeadroom = ((position != .bottom && magnificationEnabled)
+            || isMagnificationHeadroomActive) ? maximumMagnificationHeadroom : 0
         if isLaunchBounceActive {
-            return maximumMagnificationHeadroom + maximumLaunchBounceHeadroom
+            return max(magnificationHeadroom, maximumMagnificationHeadroom)
+                + maximumLaunchBounceHeadroom
         }
-        return isMagnificationHeadroomActive ? maximumMagnificationHeadroom : 0
+        return magnificationHeadroom
     }
 
     private func updateBackgroundFrame() {
@@ -1041,29 +1063,29 @@ final class DockContentView: NSView {
     }
 
     private func resolvedBackgroundBodyFrame(for visualFrame: NSRect) -> NSRect {
-        let backgroundHeight = min(dockBodyHeight, bounds.height)
-        guard bounds.width > 0, visualFrame.width > 0 else {
-            return NSRect(
-                x: bounds.minX,
-                y: bounds.minY,
-                width: bounds.width,
+        let backgroundHeight = min(dockBodyHeight, layoutSize.height)
+        guard layoutSize.width > 0, visualFrame.width > 0, visualFrame.height > 0 else {
+            return position.viewRect(NSRect(
+                x: 0,
+                y: 0,
+                width: layoutSize.width,
                 height: backgroundHeight
-            )
+            ), in: layoutSize)
         }
 
-        let converted = stripView.convert(visualFrame, to: self)
+        let converted = position.layoutRect(stripView.convert(visualFrame, to: self), in: layoutSize)
         var originX = converted.minX - DockInteractiveRegion.backgroundHorizontalPadding
         var width = converted.width + DockInteractiveRegion.backgroundHorizontalPadding * 2
         if originX < 0 {
             width += originX
             originX = 0
         }
-        width = min(max(0, width), bounds.width - originX)
+        width = min(max(0, width), layoutSize.width - originX)
         let scale = window?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
             ?? 2
         return DockBackgroundFrameAlignment.pixelAligned(
-            NSRect(x: originX, y: 0, width: width, height: backgroundHeight),
+            position.viewRect(NSRect(x: originX, y: 0, width: width, height: backgroundHeight), in: layoutSize),
             backingScaleFactor: scale
         )
     }
@@ -1088,6 +1110,21 @@ final class DockContentView: NSView {
 }
 
 private final class HorizontalDockScrollView: NSScrollView {
+    var position: DockPosition = .bottom {
+        didSet {
+            guard position.isVertical != oldValue.isVertical, let document = documentView else { return }
+            let frame = contentView.frame
+            documentView = nil
+            let clip = DockAxisClipView(frame: frame)
+            clip.vertical = position.isVertical
+            clip.drawsBackground = false
+            clip.clipsToBounds = false
+            contentView = clip
+            documentView = document
+            contentView.clipsToBounds = false
+            contentView.scroll(to: .zero)
+        }
+    }
     var onScroll: ((NSEvent) -> Void)?
     var onBackgroundContextMenu: ((NSEvent) -> Void)?
 
@@ -1096,6 +1133,11 @@ private final class HorizontalDockScrollView: NSScrollView {
     }
 
     override func scrollWheel(with event: NSEvent) {
+        if position.isVertical {
+            super.scrollWheel(with: event)
+            onScroll?(event)
+            return
+        }
         guard let clipView = contentView as NSClipView? else {
             super.scrollWheel(with: event)
             return
@@ -1111,6 +1153,11 @@ private final class HorizontalDockScrollView: NSScrollView {
         reflectScrolledClipView(clipView)
         onScroll?(event)
     }
+}
+
+private final class DockAxisClipView: NSClipView {
+    var vertical = false
+    override var isFlipped: Bool { vertical }
 }
 
 struct DockHoverResolver {
@@ -1378,12 +1425,32 @@ private final class DockMagnificationDisplayLinkDriver: NSObject {
 }
 
 private final class DockStripView: NSView {
+    private var isRenderingMagnification = false
+    var position: DockPosition = .bottom {
+        didSet {
+            guard position != oldValue else { return }
+            cancelPointerInteraction()
+            needsLayout = true
+        }
+    }
+    override var isFlipped: Bool { position.isVertical }
+    private var layoutSize: NSSize { position.layoutSize(for: bounds.size) }
+    private func layoutPoint(_ point: NSPoint) -> NSPoint {
+        position.layoutPoint(point, in: layoutSize, flippedVertical: position.isVertical)
+    }
+    private func layoutRect(_ rect: NSRect) -> NSRect {
+        position.layoutRect(rect, in: layoutSize, flippedVertical: position.isVertical)
+    }
+    private func viewRect(_ rect: NSRect) -> NSRect {
+        position.viewRect(rect, in: layoutSize, flippedVertical: position.isVertical)
+    }
     var onBackgroundInteractionChange: ((DockBackgroundInteractionState) -> Void)?
     var onMagnificationHeadroomChange: ((Bool) -> Void)?
     var onPointerInteractionChange: ((Bool) -> Void)?
     var onRequiredWidthChange: (() -> Void)?
     var onLaunchBounceActivityChange: ((Bool) -> Void)?
     var onBackgroundContextMenu: ((NSEvent) -> Void)?
+    var screenLocationNormalizer: ((NSPoint) -> NSPoint)?
 
     private var itemButtons: [ApplicationIdentity: DockItemButton] = [:]
     private var orderedButtons: [DockItemButton] = []
@@ -1514,7 +1581,7 @@ private final class DockStripView: NSView {
             to: point
         )
         isPointerInside = true
-        pointerX = point.x
+        pointerX = layoutPoint(point).x
         pointerPoint = point
         if justEntered {
             setMagnificationTarget(1)
@@ -1806,8 +1873,9 @@ private final class DockStripView: NSView {
         preservesTrashTarget: Bool = false,
         preservesShortcutTarget: Bool = false
     ) -> DockDropDestination? {
-        guard point.x >= bounds.minX - 8,
-              point.x <= bounds.maxX + 8 else { return nil }
+        let point = layoutPoint(point)
+        guard point.x >= -8,
+              point.x <= layoutSize.width + 8 else { return nil }
         guard let trashButton = orderedButtons.first(where: { $0.item?.kind == .trash }) else {
             return nil
         }
@@ -1815,8 +1883,8 @@ private final class DockStripView: NSView {
         // Trash and the shortcut section share a hard horizontal boundary.
         // Hover hysteresis may grow to the right, but never left into the
         // shortcut insertion slot.
-        let trashIconFrame = trashButton.iconFrame(in: self)
-        let trashSlotFrame = trashButton.visualSlotFrame(in: self)
+        let trashIconFrame = layoutRect(trashButton.iconFrame(in: self))
+        let trashSlotFrame = layoutRect(trashButton.visualSlotFrame(in: self))
         let trashRightPadding: CGFloat = preservesTrashTarget ? 8 : 4
         let trashEntryMaxX = max(trashIconFrame.maxX, trashSlotFrame.maxX)
             + trashRightPadding
@@ -1838,7 +1906,7 @@ private final class DockStripView: NSView {
         let bootstrapStart = trashSlotFrame.minX - shortcutTargetWidth
         let fileSectionHysteresis = preservesShortcutTarget ? slotWidth / 2 + 4 : 0
         let existingFileSectionStart = fileButtons
-            .map { $0.visualSlotFrame(in: self).minX }
+            .map { layoutRect($0.visualSlotFrame(in: self)).minX }
             .min()
             .map {
                 $0
@@ -1851,7 +1919,7 @@ private final class DockStripView: NSView {
                 // During insertion the placeholder grows from zero width. Use
                 // its projected full-width edge so a visible slot remains a
                 // valid final drop target throughout the animation.
-                let visualFrame = button.visualSlotFrame(in: self)
+                let visualFrame = layoutRect(button.visualSlotFrame(in: self))
                 return visualFrame.minX - max(0, slotWidth - visualFrame.width) / 2
             }
         let fileSectionStart = min(
@@ -1865,7 +1933,7 @@ private final class DockStripView: NSView {
         }
 
         let insertionIndex = fileButtons.firstIndex { button in
-            point.x < button.visualSlotFrame(in: self).midX
+            point.x < layoutRect(button.visualSlotFrame(in: self)).midX
         } ?? fileButtons.count
         return .shortcuts(index: insertionIndex)
     }
@@ -1963,12 +2031,16 @@ private final class DockStripView: NSView {
 
     private func currentGlobalPointerPoint() -> NSPoint? {
         guard let window, window.isVisible else { return nil }
-        let pointInWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let location = screenLocationNormalizer?(NSEvent.mouseLocation) ?? NSEvent.mouseLocation
+        let pointInWindow = window.convertPoint(fromScreen: location)
         return convert(pointInWindow, from: nil)
     }
 
     private func handlePointerEvent(_ event: NSEvent) {
-        let point = convert(event.locationInWindow, from: nil)
+        guard let window else { return }
+        let screenLocation = window.convertPoint(toScreen: event.locationInWindow)
+        let location = screenLocationNormalizer?(screenLocation) ?? screenLocation
+        let point = convert(window.convertPoint(fromScreen: location), from: nil)
         handlePointer(at: point, timestamp: event.timestamp)
     }
 
@@ -1986,7 +2058,7 @@ private final class DockStripView: NSView {
             to: point
         )
         isPointerInside = true
-        pointerX = point.x
+        pointerX = layoutPoint(point).x
         pointerPoint = point
         if justEntered {
             onPointerInteractionChange?(true)
@@ -2039,7 +2111,7 @@ private final class DockStripView: NSView {
             from: pointerPoint,
             to: point
         )
-        pointerX = point.x
+        pointerX = layoutPoint(point).x
         pointerPoint = point
         if pointChanged, magnificationEnabled {
             requestMagnificationRender(.pointerChanged)
@@ -2468,19 +2540,22 @@ private final class DockStripView: NSView {
     }
 
     private func containsInteractivePoint(_ point: NSPoint) -> Bool {
+        let point = layoutPoint(point)
+        let canonicalBounds = NSRect(origin: .zero, size: layoutSize)
+        let visualContentFrame = layoutRect(self.visualContentFrame)
         let minimumX = max(
-            bounds.minX,
+            canonicalBounds.minX,
             visualContentFrame.minX - DockInteractiveRegion.backgroundHorizontalPadding
         )
         let maximumX = min(
-            bounds.maxX,
+            canonicalBounds.maxX,
             visualContentFrame.maxX + DockInteractiveRegion.backgroundHorizontalPadding
         )
-        let verticalBodyFrame = dockBodyFrame ?? NSRect(
-            x: bounds.minX,
-            y: bounds.minY,
-            width: bounds.width,
-            height: min(bounds.height, iconSize + 20)
+        let verticalBodyFrame = dockBodyFrame.map(layoutRect) ?? NSRect(
+            x: canonicalBounds.minX,
+            y: canonicalBounds.minY,
+            width: canonicalBounds.width,
+            height: min(canonicalBounds.height, iconSize + 20)
         )
         let bodyFrame = NSRect(
             x: minimumX,
@@ -2491,11 +2566,14 @@ private final class DockStripView: NSView {
         return DockInteractiveRegion.contains(
             point,
             bodyFrame: bodyFrame,
-            iconFrames: visibleIconFrames
+            iconFrames: visibleIconFrames.map(layoutRect)
         )
     }
 
     private func renderMagnification() {
+        guard !isRenderingMagnification else { return }
+        isRenderingMagnification = true
+        defer { isRenderingMagnification = false }
         let ownsLayerTransaction = !CATransaction.disableActions()
         if ownsLayerTransaction {
             CATransaction.begin()
@@ -2526,8 +2604,8 @@ private final class DockStripView: NSView {
         )
         let initialHorizontalOffset = DockInsertionHorizontalAlignment.offset(
             presentedRequiredWidth: presentedRequiredWidth,
-            finalDocumentWidth: bounds.width,
-            finalViewportWidth: enclosingScrollView?.contentSize.width ?? bounds.width
+            finalDocumentWidth: layoutSize.width,
+            finalViewportWidth: enclosingScrollView.map { position.layoutSize(for: $0.contentSize).width } ?? layoutSize.width
         )
         let layout = DockMagnificationLayout.make(
             itemCount: orderedButtons.count,
@@ -2537,8 +2615,8 @@ private final class DockStripView: NSView {
             spacing: iconSpacing,
             maximumScale: magnificationEnabled ? maximumMagnification : 1,
             influenceRange: magnificationRange,
-            containerWidth: bounds.width,
-            height: bounds.height,
+            containerWidth: layoutSize.width,
+            height: layoutSize.height,
             pointerX: magnificationEnabled
                 ? pointerX.map { $0 - initialHorizontalOffset }
                 : nil,
@@ -2571,8 +2649,8 @@ private final class DockStripView: NSView {
             // AppKit owns a stable, non-magnified control frame. Only the
             // button's private layers follow the live visual slot, avoiding a
             // layout pass for every icon on every display-link callback.
-            if !NSEqualRects(button.frame, geometry.viewFrame) {
-                button.frame = geometry.viewFrame
+            if !NSEqualRects(button.frame, viewRect(geometry.viewFrame)) {
+                button.frame = viewRect(geometry.viewFrame)
             }
             let identity = button.item?.identity
             button.setPresentation(
@@ -2580,7 +2658,8 @@ private final class DockStripView: NSView {
                 presenceProgress: presenceValues[index],
                 launchBounceOffset: identity.flatMap { launchBounceOffsets[$0] } ?? 0,
                 visualSlotCenterOffsetX: geometry.visualSlotCenterOffsetX,
-                visualSlotWidth: geometry.visualSlotFrame.width
+                visualSlotWidth: geometry.visualSlotFrame.width,
+                position: position
             )
             let iconFrame = button.iconFrame(in: self)
             let excludesTooltip = identity.map(removingIdentities.contains) ?? false
@@ -2595,17 +2674,11 @@ private final class DockStripView: NSView {
                 tooltipSlotFrames[index] = geometry.visualSlotFrame
             }
         }
-        let verticalHoverBounds = dockBodyFrame.map { bounds.union($0) } ?? bounds
-        tooltipHoverBounds = NSRect(
-            x: bounds.minX,
-            y: verticalHoverBounds.minY,
-            width: bounds.width,
-            height: verticalHoverBounds.height
-        )
+        tooltipHoverBounds = dockBodyFrame.map { bounds.union($0) } ?? bounds
         tooltipHoverFrames = DockHoverResolver.hoverFrames(
             slotFrames: tooltipSlotFrames,
-            in: tooltipHoverBounds
-        )
+            in: layoutRect(tooltipHoverBounds)
+        ).map(viewRect)
         updateHoveredButton(at: pointerPoint)
 
         ensureSeparatorViewCount(layout.separatorFrames.count)
@@ -2618,8 +2691,8 @@ private final class DockStripView: NSView {
                 separatorFrame.offsetBy(dx: horizontalOffset, dy: 0),
                 backingScaleFactor: scale
             )
-            if !NSEqualRects(separatorView.frame, targetFrame) {
-                separatorView.frame = targetFrame
+            if !NSEqualRects(separatorView.frame, viewRect(targetFrame)) {
+                separatorView.frame = viewRect(targetFrame)
             }
             if separatorView.layer?.contentsScale != scale {
                 separatorView.layer?.contentsScale = scale
@@ -2635,14 +2708,8 @@ private final class DockStripView: NSView {
             separatorView.isHidden = true
         }
 
-        visualContentFrame = layout.visualContentFrame.offsetBy(
-            dx: horizontalOffset,
-            dy: 0
-        )
-        restingVisualContentFrame = layout.restingVisualContentFrame.offsetBy(
-            dx: horizontalOffset,
-            dy: 0
-        )
+        visualContentFrame = viewRect(layout.visualContentFrame.offsetBy(dx: horizontalOffset, dy: 0))
+        restingVisualContentFrame = viewRect(layout.restingVisualContentFrame.offsetBy(dx: horizontalOffset, dy: 0))
         let backgroundInteraction = DockBackgroundInteractionState(
             visualContentFrame: visualContentFrame
         )
@@ -2734,13 +2801,11 @@ private final class DockStripView: NSView {
     }
 
     private func restorePointerAfterContextMenu() {
-        guard let window else {
+        guard let point = currentGlobalPointerPoint() else {
             cancelPointerInteraction()
             return
         }
-        let pointInWindow = window.convertPoint(fromScreen: NSEvent.mouseLocation)
-        let point = convert(pointInWindow, from: nil)
-        if bounds.contains(point) {
+        if containsInteractivePoint(point) {
             handlePointer(
                 at: point,
                 timestamp: ProcessInfo.processInfo.systemUptime

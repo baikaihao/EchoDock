@@ -7,6 +7,7 @@ final class PreferencesStore {
     private enum Key {
         static let isEnabled = "isEnabled"
         static let autoHide = "autoHide"
+        static let dockPosition = "dockPosition"
         static let autoHideInFullScreen = "autoHideInFullScreen"
         static let reserveSpaceForWindows = "reserveSpaceForWindows"
         static let iconSize = "iconSize"
@@ -38,6 +39,7 @@ final class PreferencesStore {
         defaults.register(defaults: [
             Key.isEnabled: true,
             Key.autoHide: false,
+            Key.dockPosition: DockPosition.bottom.rawValue,
             Key.autoHideInFullScreen: true,
             Key.reserveSpaceForWindows: false,
             Key.iconSize: 48.0,
@@ -68,6 +70,11 @@ final class PreferencesStore {
     var autoHide: Bool {
         get { defaults.bool(forKey: Key.autoHide) }
         set { set(newValue, forKey: Key.autoHide) }
+    }
+
+    var dockPosition: DockPosition {
+        get { DockPosition(rawValue: defaults.string(forKey: Key.dockPosition) ?? "") ?? .bottom }
+        set { set(newValue.rawValue, forKey: Key.dockPosition) }
     }
 
     var autoHideInFullScreen: Bool {
@@ -149,6 +156,7 @@ final class PreferencesStore {
 
     func restoreAppearanceDefaults() {
         [
+            Key.dockPosition,
             Key.iconSize,
             Key.iconSpacing,
             Key.dockTransparency,

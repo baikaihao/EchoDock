@@ -341,7 +341,7 @@ final class DockBackgroundSurfaceView: NSView {
         let bodyRect = intersection.isNull ? .zero : intersection
         currentBodyRect = bodyRect
         let cornerRadius = DockBackgroundGeometry.cornerRadius(
-            forBodyHeight: bodyRect.height
+            forBodyHeight: min(bodyRect.width, bodyRect.height)
         )
         let boundsChanged = !NSEqualRects(previousBounds, bounds)
         let bodyChanged = !NSEqualRects(previousBodyRect, bodyRect)
@@ -369,6 +369,7 @@ final class DockBackgroundSurfaceView: NSView {
         }
 
         let radiusChanged = previousBodyRect.isNull
+            || abs(previousBodyRect.width - bodyRect.width) > 0.000_1
             || abs(previousBodyRect.height - bodyRect.height) > 0.000_1
         if let iceSurface = baseSurface as? DockLiquidGlassSurfaceView {
             if bodyChanged || radiusChanged || boundsChanged {
@@ -1079,7 +1080,7 @@ final class DockLiquidGlassSurfaceView: NSView {
     private func updateOpticsForCurrentHeight(on backdropLayer: CALayer) -> Bool {
         guard renderedBodyRect.height > 0 else { return false }
         let resolved = DockLiquidGlassOptics.dock(
-            bodyHeight: renderedBodyRect.height
+            bodyHeight: min(renderedBodyRect.width, renderedBodyRect.height)
         )
         guard resolved != optics else { return false }
         optics = resolved
@@ -1101,10 +1102,11 @@ final class DockLiquidGlassSurfaceView: NSView {
         guard renderedBodyRect.height > 0,
               let displacementMapLayer else { return }
         let descriptor = DockLiquidGlassMapDescriptor(
-            bodyHeight: renderedBodyRect.height,
+            bodyHeight: min(renderedBodyRect.width, renderedBodyRect.height),
             cornerRadius: renderedCornerRadius,
             backingScale: renderedBackingScale,
-            optics: optics
+            optics: optics,
+            isVertical: renderedBodyRect.height > renderedBodyRect.width
         )
         guard displacementMap?.descriptor != descriptor,
               let map = DockLiquidGlassMapRenderer.makeMap(

@@ -39,10 +39,11 @@ struct DockPanelPresentationTests {
         #expect(!completed)
     }
 
-    @Test
-    func hideIsTheRevealAnimationPlayedBackward() throws {
+    @Test(arguments: DockPosition.allCases)
+    func hideIsTheRevealAnimationPlayedBackward(position: DockPosition) throws {
         let (panel, presentation, _) = makeVisiblePresentation()
         defer { presentation.reset(); panel.orderOut(nil) }
+        presentation.position = position
         presentation.prepareForReveal(animated: true, reduceMotion: false)
         presentation.setVisible(true, animated: true, reduceMotion: false) {}
         let layer = try #require(presentation.layer)

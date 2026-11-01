@@ -6,8 +6,18 @@ struct WindowReservationDisplayGeometry: Equatable {
     let frame: CGRect
     let visibleFrame: CGRect
     let reservedHeight: CGFloat
+    var position: DockPosition = .bottom
+
+    var canonical: Self {
+        Self(identity: identity, frame: position.canonicalAccessibilityFrame(frame),
+             visibleFrame: position.canonicalAccessibilityFrame(visibleFrame), reservedHeight: reservedHeight)
+    }
 
     var availableFrame: CGRect {
+        if position != .bottom {
+            let frame = canonical.availableFrame
+            return frame.isNull ? .null : position.physicalAccessibilityFrame(frame)
+        }
         let bottomLimit = min(visibleFrame.maxY, frame.maxY - max(0, reservedHeight))
         guard bottomLimit > visibleFrame.minY else { return .null }
         return CGRect(
@@ -28,6 +38,7 @@ struct WindowEdgeSnapRegion: Equatable {
     let displayIdentity: DisplayIdentity
     /// EchoDock's resting glass body in Accessibility's top-left coordinate space.
     let frame: CGRect
+    var position: DockPosition = .bottom
 }
 
 enum WindowEdgeSnapInteraction: Equatable {
@@ -122,6 +133,18 @@ enum WindowEdgeSnapGeometryPolicy {
         activationDistance: CGFloat,
         gap: CGFloat
     ) -> [Candidate] {
+        if region.position != .bottom {
+            return candidates(
+                for: region.position.canonicalAccessibilityFrame(windowFrame), interaction: interaction,
+                region: WindowEdgeSnapRegion(displayIdentity: region.displayIdentity,
+                    frame: region.position.canonicalAccessibilityFrame(region.frame)),
+                activationDistance: activationDistance, gap: gap
+            ).map { candidate in
+                Candidate(displayIdentity: candidate.displayIdentity,
+                          targetFrame: region.position.physicalAccessibilityFrame(candidate.targetFrame),
+                          distance: candidate.distance, priority: candidate.priority)
+            }
+        }
         let dockFrame = region.frame
         guard dockFrame.width > 0, dockFrame.height > 0 else { return [] }
 
@@ -274,8 +297,15 @@ enum WindowReservationGeometryPolicy {
         displays: [WindowReservationDisplayGeometry],
         edgeTolerance: CGFloat = defaultEdgeTolerance
     ) -> WindowReservationAdjustment? {
-        guard let display = bestDisplay(for: windowFrame, displays: displays),
-              !isLikelyFullScreen(
+        guard let display = bestDisplay(for: windowFrame, displays: displays) else { return nil }
+        if display.position != .bottom {
+            return adjustment(for: display.position.canonicalAccessibilityFrame(windowFrame),
+                              displays: [display.canonical], edgeTolerance: edgeTolerance).map {
+                WindowReservationAdjustment(displayIdentity: $0.displayIdentity,
+                    targetFrame: display.position.physicalAccessibilityFrame($0.targetFrame))
+            }
+        }
+        guard !isLikelyFullScreen(
                 windowFrame,
                 in: display,
                 edgeTolerance: defaultEdgeTolerance
@@ -335,6 +365,10 @@ enum WindowReservationGeometryPolicy {
         in display: WindowReservationDisplayGeometry,
         edgeTolerance: CGFloat = defaultEdgeTolerance
     ) -> Bool {
+        if display.position != .bottom {
+            return isMaximizedOrBottomTiled(display.position.canonicalAccessibilityFrame(windowFrame),
+                                           in: display.canonical, edgeTolerance: edgeTolerance)
+        }
         let visible = display.visibleFrame
         guard windowFrame.width > 0,
               windowFrame.height > 0,

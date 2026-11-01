@@ -68,6 +68,7 @@ final class WindowReservationService {
     private var pendingEvaluations: [PendingEvaluation] = []
     private var mutationSuppressions: [MutationSuppression] = []
     private var displayGeometries: [WindowReservationDisplayGeometry] = []
+    private let dockPositionProvider: () -> DockPosition
     private var lifecycleGeneration: UInt64 = 0
     private var evaluationRevision: UInt64 = 0
     private var startupRefreshWorkItem: DispatchWorkItem?
@@ -95,7 +96,8 @@ final class WindowReservationService {
             reservationHeightProvider: {
                 _ in WindowReservationMetrics.reservedHeight(iconSize: preferences.iconSize)
             },
-            snapRegionsProvider: snapRegionsProvider
+            snapRegionsProvider: snapRegionsProvider,
+            dockPositionProvider: { preferences.dockPosition }
         )
     }
 
@@ -109,7 +111,8 @@ final class WindowReservationService {
         isAutoHide: @escaping () -> Bool,
         isDisplayEnabled: @escaping DisplayEnabledProvider,
         reservationHeightProvider: @escaping ReservationHeightProvider,
-        snapRegionsProvider: @escaping SnapRegionsProvider = { [] }
+        snapRegionsProvider: @escaping SnapRegionsProvider = { [] },
+        dockPositionProvider: @escaping () -> DockPosition = { .bottom }
     ) {
         self.topologyProvider = topologyProvider
         self.workspace = workspace
@@ -121,6 +124,7 @@ final class WindowReservationService {
         self.isDisplayEnabled = isDisplayEnabled
         self.reservationHeightProvider = reservationHeightProvider
         self.snapRegionsProvider = snapRegionsProvider
+        self.dockPositionProvider = dockPositionProvider
     }
 
     func start() {
@@ -1087,6 +1091,8 @@ final class WindowReservationService {
                 frame: accessibilityDisplayFrame,
                 visibleFrame: visibleFrame,
                 reservedHeight: reservationHeightProvider(descriptor)
+                    + (dockPositionProvider() == .top ? max(screen.safeAreaInsets.top, screen.frame.maxY - screen.visibleFrame.maxY) : 0),
+                position: dockPositionProvider()
             )
         }
     }
