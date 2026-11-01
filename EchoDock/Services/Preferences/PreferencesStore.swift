@@ -27,6 +27,7 @@ final class PreferencesStore {
         static let displayOverrides = "displayOverrides"
         static let knownDisplays = "knownDisplays"
         static let newDisplaysEnabled = "newDisplaysEnabled"
+        static let automaticUpdateChecksEnabled = "automaticUpdateChecksEnabled"
         static let nativeDockStrategy = "nativeDockStrategy"
         static let nativeDockTarget = "nativeDockTarget"
         static let nativeDockSetupState = "nativeDockSetupState"
@@ -57,6 +58,7 @@ final class PreferencesStore {
             Key.internalEdgeDelay: 0.2,
             Key.showRunningApplications: true,
             Key.newDisplaysEnabled: true,
+            Key.automaticUpdateChecksEnabled: true,
             Key.nativeDockStrategy: NativeDockStrategy.systemManaged.rawValue,
             Key.nativeDockSetupState: NativeDockSetupState.systemManaged.rawValue
         ])
@@ -190,6 +192,11 @@ final class PreferencesStore {
     var newDisplaysEnabled: Bool {
         get { defaults.bool(forKey: Key.newDisplaysEnabled) }
         set { set(newValue, forKey: Key.newDisplaysEnabled) }
+    }
+
+    var automaticUpdateChecksEnabled: Bool {
+        get { defaults.bool(forKey: Key.automaticUpdateChecksEnabled) }
+        set { set(newValue, forKey: Key.automaticUpdateChecksEnabled) }
     }
 
     var nativeDockStrategy: NativeDockStrategy {

@@ -13,6 +13,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     private var snapshot: DockSnapshot = .empty
     private var preferencesObserver: NSObjectProtocol?
     private var aboutWindowController: AboutWindowController?
+    private let updateCheckController: UpdateCheckController
 
     init(
         preferences: PreferencesStore,
@@ -21,6 +22,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         fileUndoAction: FileUndoMenuAction? = nil
     ) {
         self.preferences = preferences
+        self.updateCheckController = UpdateCheckController(preferences: preferences)
         self.onOpenSettings = onOpenSettings
         self.onRefresh = onRefresh
         self.fileUndoAction = fileUndoAction ?? .unavailable
@@ -45,7 +47,19 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         rebuildMenu()
     }
 
+    func startAutomaticUpdateChecks() {
+        updateCheckController.startAutomaticChecks()
+    }
+
+    func stopUpdateChecks() {
+        updateCheckController.stop()
+    }
+
     private func configure() {
+        updateCheckController.onStateChange = { [weak self] isChecking in
+            self?.rebuildMenu()
+            self?.aboutWindowController?.setUpdateCheckInProgress(isChecking)
+        }
         menu.autoenablesItems = false
         if let button = statusItem.button {
             button.image = statusImage()
@@ -70,6 +84,7 @@ final class StatusItemController: NSObject, NSMenuDelegate {
     }
 
     private func refreshPreferenceState() {
+        updateCheckController.refreshAutomaticCheckPreference()
         updateStatusImage()
         rebuildMenu()
     }
@@ -135,6 +150,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         )
         aboutItem.target = self
         menu.addItem(aboutItem)
+
+        let updateTitle = L10n.text(updateCheckController.isChecking ? "updates.checking" : "updates.check")
+        let updateItem = NSMenuItem(title: updateTitle, action: #selector(checkForUpdates), keyEquivalent: "")
+        updateItem.target = self
+        updateItem.isEnabled = !updateCheckController.isChecking
+        menu.addItem(updateItem)
 
         let quitItem = NSMenuItem(
             title: L10n.text("statusItem.quit"),
@@ -208,11 +229,18 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         showAboutWindow()
     }
 
+    @objc private func checkForUpdates() {
+        updateCheckController.checkForUpdates()
+    }
+
     func showAboutWindow() {
         NSApp.activate(ignoringOtherApps: true)
         if aboutWindowController == nil {
-            aboutWindowController = AboutWindowController()
+            aboutWindowController = AboutWindowController(onCheckForUpdates: { [weak self] in
+                self?.updateCheckController.checkForUpdates()
+            })
         }
+        aboutWindowController?.setUpdateCheckInProgress(updateCheckController.isChecking)
         aboutWindowController?.present()
     }
 

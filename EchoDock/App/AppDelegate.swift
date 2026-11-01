@@ -108,10 +108,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         modelController.start()
         displayCoordinator.apply(snapshot: modelController.snapshot)
         statusItemController.update(snapshot: modelController.snapshot)
+        statusItemController.startAutomaticUpdateChecks()
         displayCoordinator.setItemAnimationsEnabled(true)
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        statusItemController?.stopUpdateChecks()
         modelController?.stop()
         windowReservationService?.stop()
         nativeDockPolicyController?.stop()

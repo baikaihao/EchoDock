@@ -4,9 +4,12 @@ import AppKit
 final class AboutWindowController: NSWindowController {
     private static let fallbackVersion = "1.0.2"
     private static let fallbackBuild = "20260727"
+    private let onCheckForUpdates: () -> Void
+    private let updateButton = NSButton()
 
-    init(bundle: Bundle = .main) {
-        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 270))
+    init(bundle: Bundle = .main, onCheckForUpdates: @escaping () -> Void) {
+        self.onCheckForUpdates = onCheckForUpdates
+        let contentView = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 310))
         let window = NSWindow(
             contentRect: contentView.bounds,
             styleMask: [.titled, .closable],
@@ -50,12 +53,18 @@ final class AboutWindowController: NSWindowController {
         descriptionLabel.alignment = .center
         descriptionLabel.maximumNumberOfLines = 2
 
+        updateButton.title = L10n.text("updates.check")
+        updateButton.bezelStyle = .rounded
+        updateButton.target = self
+        updateButton.action = #selector(checkForUpdates)
+
         let stack = NSStackView(views: [
             iconView,
             nameLabel,
             versionLabel,
             buildLabel,
-            descriptionLabel
+            descriptionLabel,
+            updateButton
         ])
         stack.orientation = .vertical
         stack.alignment = .centerX
@@ -63,6 +72,7 @@ final class AboutWindowController: NSWindowController {
         stack.setCustomSpacing(10, after: iconView)
         stack.setCustomSpacing(7, after: nameLabel)
         stack.setCustomSpacing(14, after: buildLabel)
+        stack.setCustomSpacing(14, after: descriptionLabel)
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
 
@@ -85,6 +95,15 @@ final class AboutWindowController: NSWindowController {
         }
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    func setUpdateCheckInProgress(_ isChecking: Bool) {
+        updateButton.title = L10n.text(isChecking ? "updates.checking" : "updates.check")
+        updateButton.isEnabled = !isChecking
+    }
+
+    @objc private func checkForUpdates() {
+        onCheckForUpdates()
     }
 
     private func metadataLabel(text: String) -> NSTextField {

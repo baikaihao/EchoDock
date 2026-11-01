@@ -19,6 +19,10 @@ final class GeneralSettingsViewController: NSViewController {
     private let edgeDelayValue = NSTextField(labelWithString: "")
     private let loginItemSwitch = NSSwitch()
     private let loginItemStatus = NSTextField(labelWithString: "")
+    private let automaticUpdateChecksSwitch = NSSwitch()
+    private let automaticUpdateChecksDescription = NSTextField(
+        wrappingLabelWithString: L10n.text("settings.general.automaticUpdateChecks.description")
+    )
     private let accessibilityPermissionButton = NSButton(
         title: L10n.text("accessibility.request"),
         target: nil,
@@ -85,6 +89,7 @@ final class GeneralSettingsViewController: NSViewController {
         )
         runningApplicationsSwitch.state = preferences.showRunningApplications ? .on : .off
         newDisplaysSwitch.state = preferences.newDisplaysEnabled ? .on : .off
+        automaticUpdateChecksSwitch.state = preferences.automaticUpdateChecksEnabled ? .on : .off
         hideDelaySlider.doubleValue = preferences.hideDelay
         hideDelayValue.stringValue = L10n.format("format.seconds.oneDecimal", preferences.hideDelay)
         hideDelaySlider.isEnabled = preferences.autoHide
@@ -140,6 +145,12 @@ final class GeneralSettingsViewController: NSViewController {
         loginItemSwitch.action = #selector(loginItemChanged)
         loginItemStatus.font = .systemFont(ofSize: 11)
         loginItemStatus.textColor = .secondaryLabelColor
+
+        automaticUpdateChecksSwitch.target = self
+        automaticUpdateChecksSwitch.action = #selector(automaticUpdateChecksChanged)
+        automaticUpdateChecksDescription.font = .systemFont(ofSize: 11)
+        automaticUpdateChecksDescription.textColor = .secondaryLabelColor
+        automaticUpdateChecksDescription.maximumNumberOfLines = 2
 
         accessibilityPermissionButton.bezelStyle = .rounded
         accessibilityPermissionButton.imagePosition = .imageLeading
@@ -225,6 +236,11 @@ final class GeneralSettingsViewController: NSViewController {
         stack.addArrangedSubview(makeRow(
             title: L10n.text("settings.general.launchAtLogin"),
             control: loginControl
+        ))
+        stack.addArrangedSubview(makeDescribedRow(
+            title: L10n.text("settings.general.automaticUpdateChecks"),
+            description: automaticUpdateChecksDescription,
+            control: automaticUpdateChecksSwitch
         ))
 
         let permissionSeparator = NSBox()
@@ -366,6 +382,10 @@ final class GeneralSettingsViewController: NSViewController {
 
     @objc private func edgeDelayChanged(_ sender: NSSlider) {
         preferences.internalEdgeDelay = (sender.doubleValue * 10).rounded() / 10
+    }
+
+    @objc private func automaticUpdateChecksChanged(_ sender: NSSwitch) {
+        preferences.automaticUpdateChecksEnabled = sender.state == .on
     }
 
     @objc private func loginItemChanged(_ sender: NSSwitch) {

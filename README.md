@@ -63,7 +63,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 | 应用操作 | 左键启动或切换应用；再次点击前台应用可将当前窗口最小化，再次点击恢复该窗口（需要辅助功能权限）。右键可打开应用、显示窗口、关闭窗口、隐藏/显示、退出，以及在 Finder 中定位。 |
 | 外观调整 | 调整图标大小、图标间距、背景透明度、放大倍率、影响范围和名称框距离，并独立开关启动弹跳与运行指示灯；macOS 26 及以上可切换经典与液态玻璃风格。 |
 | 原生 Dock 屏幕策略 | 显示原生 Dock 的实际所在屏幕，或尝试将它固定到所选显示器；状态会在设置中明确展示。 |
-| 菜单栏控制 | 快速显示/隐藏 EchoDock、立即刷新应用列表、打开设置与关于窗口，或退出应用。 |
+| 菜单栏控制 | 快速显示/隐藏 EchoDock、立即刷新应用列表、检查更新、打开设置与关于窗口，或退出应用。 |
 
 ### 快速开始
 
@@ -75,6 +75,8 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 6. 将 Finder 中的文件或文件夹拖到废纸篓左侧，即可加入第三栏。
 
 默认情况下，EchoDock 会启用所有可用屏幕、在普通桌面保持显示，并在原生全屏空间中自动隐藏；运行中未固定的应用、启动弹跳与运行指示灯也默认开启。你可以在“通用”中调整闲时隐藏和全屏隐藏行为，或从菜单栏选择“隐藏 EchoDock”，临时隐藏所有面板而不退出后台同步。
+
+EchoDock 每 24 小时自动检查一次 GitHub Releases 中的最新正式版，检查时间会保存在本机，重启应用不会重复检查。仅发现新版本时提示，没有更新或网络失败时保持静默。你也可以随时从菜单栏或“关于 EchoDock”窗口选择“检查更新…”。发现新版本后，可打开发布页面查看更新日志并下载新版；下载后手动替换应用。
 
 ### 使用方式
 
@@ -130,6 +132,7 @@ EchoDock 在你选择的显示器底部提供独立、可交互的程序坞。�
 | 自动收起延迟 | 鼠标离开后等待多久再隐藏。 | `0.2–2.0 秒`，默认 `0.6 秒` |
 | 内部屏幕边缘停留 | 在上下相邻的屏幕边界处，停留多久才唤出 EchoDock，减少跨屏时误触。 | `0–0.5 秒`，默认 `0.2 秒` |
 | 登录时启动 | 登录 macOS 后自动启动 EchoDock。 | 默认关闭 |
+| 自动检查更新 | 每 24 小时检查一次正式版更新，发现新版时提示；关闭后仍可手动检查。 | 默认开启 |
 | 辅助功能权限 | 申请或查看辅助功能授权状态。 | 按需授权 |
 
 #### 外观
@@ -284,7 +287,7 @@ EchoDock adds an independent, interactive app dock to the bottom of each display
 | App controls | Left-click to launch or switch; clicking the active app minimizes its current window, and another click restores that same window (requires Accessibility permission). Right-click to open, reveal windows, close a window, hide/show, quit, or locate the app in Finder. |
 | Appearance controls | Adjust icon size, spacing, background transparency, magnification scale and range, and label distance, with separate launch-bounce and running-indicator switches. macOS 26 and later can switch between Classic and Liquid Glass. |
 | System Dock display policy | Shows the display that actually contains the system Dock, or makes a best-effort attempt to keep it on a selected display. |
-| Menu bar controls | Show/hide EchoDock, refresh the app list, open Settings or About, and quit the utility. |
+| Menu bar controls | Show/hide EchoDock, refresh the app list, check for updates, open Settings or About, and quit the utility. |
 
 ### Quick start
 
@@ -296,6 +299,8 @@ EchoDock adds an independent, interactive app dock to the bottom of each display
 6. Drag files or folders from Finder to the area left of Trash to add them to the third section.
 
 By default, EchoDock is enabled on every available display, stays visible on regular desktops, and hides automatically in native full-screen spaces. Unpinned running apps, launch bounces, and running indicators are also enabled by default. You can adjust idle hiding and full-screen hiding under General, or choose “Hide EchoDock” from the menu bar to hide all panels temporarily while keeping synchronization running.
+
+EchoDock automatically checks the latest stable release on GitHub Releases every 24 hours. The last check time is saved locally, so relaunching the app does not trigger duplicate checks. Automatic checks only prompt when an update is available; no-update results and connection failures stay silent. You can also choose “Check for Updates…” from the menu bar or the About EchoDock window at any time. If an update is available, open its release page to read the notes and download it, then replace the app manually.
 
 ### How to use it
 
@@ -351,6 +356,7 @@ Right-click empty space in EchoDock to open Settings or About, or to quit EchoDo
 | Hide delay | Controls how long EchoDock waits after the pointer leaves. | `0.2–2.0 s`, default `0.6 s` |
 | Internal-edge dwell | Delays reveal on an edge shared by vertically adjacent displays to prevent accidental triggers while crossing screens. | `0–0.5 s`, default `0.2 s` |
 | Launch at login | Starts EchoDock after you sign in to macOS. | Off by default |
+| Automatically Check for Updates | Checks for stable releases every 24 hours and prompts when an update is available. Manual checks remain available when disabled. | On by default |
 | Accessibility permission | Requests permission or shows its current status. | Granted only when needed |
 
 #### Appearance
