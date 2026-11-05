@@ -14,13 +14,13 @@ final class DockStripView: NSView {
     override var isFlipped: Bool { position.isVertical }
     private var layoutSize: NSSize { position.layoutSize(for: bounds.size) }
     private func layoutPoint(_ point: NSPoint) -> NSPoint {
-        position.layoutPoint(point, in: layoutSize, flippedVertical: position.isVertical)
+        position.contentPosition.layoutPoint(point, in: layoutSize, flippedVertical: position.isVertical)
     }
     private func layoutRect(_ rect: NSRect) -> NSRect {
-        position.layoutRect(rect, in: layoutSize, flippedVertical: position.isVertical)
+        position.contentPosition.layoutRect(rect, in: layoutSize, flippedVertical: position.isVertical)
     }
     private func viewRect(_ rect: NSRect) -> NSRect {
-        position.viewRect(rect, in: layoutSize, flippedVertical: position.isVertical)
+        position.contentPosition.viewRect(rect, in: layoutSize, flippedVertical: position.isVertical)
     }
     var onBackgroundInteractionChange: ((DockBackgroundInteractionState) -> Void)?
     var onMagnificationHeadroomChange: ((Bool) -> Void)?

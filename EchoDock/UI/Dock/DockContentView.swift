@@ -40,6 +40,7 @@ final class DockContentView: NSView {
     private let stripView = DockStripView()
     private let iconProvider: ApplicationIconProvider
     private var position: DockPosition = .bottom
+    private var layoutPosition: DockPosition { position.contentPosition }
     private var layoutSize: NSSize { position.layoutSize(for: bounds.size) }
 
     private(set) var dockBodyHeight: CGFloat = 72
@@ -347,7 +348,7 @@ final class DockContentView: NSView {
             max(0, layoutSize.height - dockBodyHeight)
         )
         let stripHeight = max(0, dockBodyHeight - 8 + activeHeadroom)
-        backgroundView.setHostedContentFrame(position.viewRect(NSRect(
+        backgroundView.setHostedContentFrame(layoutPosition.viewRect(NSRect(
             x: 10,
             y: 4,
             width: max(0, layoutSize.width - 20),
@@ -359,7 +360,7 @@ final class DockContentView: NSView {
             width: position.isVertical ? stripHeight : max(stripView.requiredWidth, scrollView.contentSize.width),
             height: position.isVertical ? max(stripView.requiredWidth, scrollView.contentSize.height) : stripHeight
         )
-        let dockBodyFrame = position.viewRect(NSRect(
+        let dockBodyFrame = layoutPosition.viewRect(NSRect(
             x: 0,
             y: 0,
             width: layoutSize.width,
@@ -654,7 +655,23 @@ final class DockContentView: NSView {
         )
         menu.addItem(quitItem)
 
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
+        guard let window else { return }
+        let pointer = window.convertPoint(toScreen: event.locationInWindow)
+        let body = window.convertToScreen(convert(backgroundBodyFrame, to: nil))
+        let anchor = position.isVertical
+            ? NSRect(x: body.minX, y: pointer.y, width: body.width, height: 0)
+            : NSRect(x: pointer.x, y: body.minY, width: 0, height: body.height)
+        let positionedEvent = DockContextMenuPlacement.positionedEvent(
+            for: menu,
+            sourceEvent: event,
+            in: self,
+            anchorScreenFrame: anchor,
+            position: position
+        )
+        onContextMenuPresentationChange?(true)
+        onTooltipPresentation?(nil)
+        defer { onContextMenuPresentationChange?(false) }
+        NSMenu.popUpContextMenu(menu, with: positionedEvent, for: self)
     }
 
     @objc private func undoFileOperation() {
@@ -1067,7 +1084,7 @@ final class DockContentView: NSView {
     private func resolvedBackgroundBodyFrame(for visualFrame: NSRect) -> NSRect {
         let backgroundHeight = min(dockBodyHeight, layoutSize.height)
         guard layoutSize.width > 0, visualFrame.width > 0, visualFrame.height > 0 else {
-            return position.viewRect(NSRect(
+            return layoutPosition.viewRect(NSRect(
                 x: 0,
                 y: 0,
                 width: layoutSize.width,
@@ -1075,7 +1092,7 @@ final class DockContentView: NSView {
             ), in: layoutSize)
         }
 
-        let converted = position.layoutRect(stripView.convert(visualFrame, to: self), in: layoutSize)
+        let converted = layoutPosition.layoutRect(stripView.convert(visualFrame, to: self), in: layoutSize)
         var originX = converted.minX - DockInteractiveRegion.backgroundHorizontalPadding
         var width = converted.width + DockInteractiveRegion.backgroundHorizontalPadding * 2
         if originX < 0 {
@@ -1087,7 +1104,7 @@ final class DockContentView: NSView {
             ?? NSScreen.main?.backingScaleFactor
             ?? 2
         return DockBackgroundFrameAlignment.pixelAligned(
-            position.viewRect(NSRect(x: originX, y: 0, width: width, height: backgroundHeight), in: layoutSize),
+            layoutPosition.viewRect(NSRect(x: originX, y: 0, width: width, height: backgroundHeight), in: layoutSize),
             backingScaleFactor: scale
         )
     }

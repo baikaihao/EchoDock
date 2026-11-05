@@ -256,6 +256,7 @@ final class DockPanelController {
     private var latestPointerSample: (location: CGPoint, pressedButtons: Int)?
     private var appliedPosition: DockPosition?
     private var pendingPanelResize: DispatchWorkItem?
+    private var appliedReservationHeight: CGFloat = 0
     private var isReconcilingPointer = false
 
     private var position: DockPosition { preferences.dockPosition }
@@ -282,6 +283,21 @@ final class DockPanelController {
             autoHideInFullScreen: preferences.autoHideInFullScreen,
             isFullScreenActive: isFullScreenActive
         )
+    }
+
+    var windowReservationHeight: CGFloat {
+        guard let body = resolvedRestingDockBodyFrameInScreen else {
+            return WindowReservationMetrics.reservedHeight(bodyThickness: contentView.dockBodyHeight)
+                + (position == .top ? topInset : 0)
+        }
+        let depth: CGFloat
+        switch position {
+        case .bottom: depth = body.maxY - descriptor.frame.minY
+        case .top: depth = descriptor.frame.maxY - body.minY
+        case .left: depth = body.maxX - descriptor.frame.minX
+        case .right: depth = descriptor.frame.maxX - body.minX
+        }
+        return max(0, depth) + WindowEdgeSnapGeometryPolicy.defaultGap
     }
 
     var restingDockBodyFrameInScreen: NSRect? {
@@ -760,6 +776,8 @@ final class DockPanelController {
                 resolvedCurrentDockVisualFrameInScreen
                 ?? resolvedRestingDockBodyFrameInScreen
         }
+        // DisplayCoordinator publishes the matching geometry after apply().
+        appliedReservationHeight = windowReservationHeight
     }
 
     private func show(always: Bool, animated: Bool) {
@@ -1012,19 +1030,25 @@ final class DockPanelController {
     private func resizePanel(to size: NSSize) {
         guard size.width > 0, size.height > 0 else { return }
         let targetFrame = position.panelFrame(size: size, display: descriptor.frame, topInset: topInset, bottomInset: bottomInset)
-        guard !NSEqualRects(panel.frame, targetFrame) else { return }
-        let shouldDisplay = panel.isVisible
-        panel.setFrame(targetFrame, display: false)
-        if isFileDragDestinationActive {
-            contentView.needsLayout = true
-            contentView.layoutSubtreeIfNeeded()
+        if !NSEqualRects(panel.frame, targetFrame) {
+            let shouldDisplay = panel.isVisible
+            panel.setFrame(targetFrame, display: false)
+            if isFileDragDestinationActive {
+                contentView.needsLayout = true
+                contentView.layoutSubtreeIfNeeded()
+            }
+            // Re-hit-testing here would feed window geometry back into hover
+            // and could alternate between expanded and resting sizes.
+            if shouldDisplay {
+                panel.displayIfNeeded()
+            }
         }
-        // Headroom changes keep the strip's main-axis pointer target stable.
-        // Re-hit-testing here feeds the new window geometry back into hover
-        // and can alternate between expanded and resting sizes indefinitely.
-        if shouldDisplay {
-            panel.displayIfNeeded()
-        }
+        let reservationHeight = windowReservationHeight
+        guard abs(reservationHeight - appliedReservationHeight) > 0.01 else { return }
+        appliedReservationHeight = reservationHeight
+        // Removal animations can change fitted icon size after the snapshot
+        // was applied. Publish that resting thickness, excluding hover space.
+        NotificationCenter.default.post(name: .echoDockWindowSnapRegionsDidChange, object: self)
     }
 
     private func updateFileDragCaptureRequest(_ requested: Bool) {

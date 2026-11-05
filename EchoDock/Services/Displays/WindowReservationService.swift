@@ -35,6 +35,7 @@ final class WindowReservationContext {
 final class WindowReservationService {
     typealias DisplayEnabledProvider = (DisplayIdentity) -> Bool
     typealias ReservationHeightProvider = (DisplayDescriptor) -> CGFloat
+    typealias ReservationDepthProvider = (DisplayDescriptor) -> CGFloat?
     typealias SnapRegionsProvider = () -> [WindowEdgeSnapRegion]
 
     private let topologyProvider: DisplayTopologyProvider
@@ -46,6 +47,7 @@ final class WindowReservationService {
     private let isAutoHide: () -> Bool
     private let isDisplayEnabled: DisplayEnabledProvider
     private let reservationHeightProvider: ReservationHeightProvider
+    private let reservationDepthProvider: ReservationDepthProvider?
     private let snapRegionsProvider: SnapRegionsProvider
     private let dockPositionProvider: () -> DockPosition
     private let context = WindowReservationContext()
@@ -58,7 +60,8 @@ final class WindowReservationService {
         topologyProvider: DisplayTopologyProvider = DisplayTopologyProvider(),
         workspace: NSWorkspace = .shared,
         permissionService: AccessibilityPermissionService = AccessibilityPermissionService(),
-        snapRegionsProvider: @escaping SnapRegionsProvider = { [] }
+        snapRegionsProvider: @escaping SnapRegionsProvider = { [] },
+        reservationDepthProvider: ReservationDepthProvider? = nil
     ) {
         self.init(
             topologyProvider: topologyProvider,
@@ -72,7 +75,8 @@ final class WindowReservationService {
                 _ in WindowReservationMetrics.reservedHeight(iconSize: preferences.iconSize)
             },
             snapRegionsProvider: snapRegionsProvider,
-            dockPositionProvider: { preferences.dockPosition }
+            dockPositionProvider: { preferences.dockPosition },
+            reservationDepthProvider: reservationDepthProvider
         )
     }
 
@@ -87,7 +91,8 @@ final class WindowReservationService {
         isDisplayEnabled: @escaping DisplayEnabledProvider,
         reservationHeightProvider: @escaping ReservationHeightProvider,
         snapRegionsProvider: @escaping SnapRegionsProvider = { [] },
-        dockPositionProvider: @escaping () -> DockPosition = { .bottom }
+        dockPositionProvider: @escaping () -> DockPosition = { .bottom },
+        reservationDepthProvider: ReservationDepthProvider? = nil
     ) {
         self.topologyProvider = topologyProvider
         self.workspace = workspace
@@ -98,6 +103,7 @@ final class WindowReservationService {
         self.isAutoHide = isAutoHide
         self.isDisplayEnabled = isDisplayEnabled
         self.reservationHeightProvider = reservationHeightProvider
+        self.reservationDepthProvider = reservationDepthProvider
         self.snapRegionsProvider = snapRegionsProvider
         self.dockPositionProvider = dockPositionProvider
     }
@@ -179,9 +185,16 @@ final class WindowReservationService {
                 identity: descriptor.identity,
                 frame: accessibilityDisplayFrame,
                 visibleFrame: visibleFrame,
-                reservedHeight: reservationHeightProvider(descriptor)
-                    + (dockPositionProvider() == .top ? max(screen.safeAreaInsets.top, screen.frame.maxY - screen.visibleFrame.maxY) : 0),
-                position: dockPositionProvider()
+                reservedHeight: reservationDepthProvider?(descriptor)
+                    ?? (reservationHeightProvider(descriptor)
+                        + (dockPositionProvider() == .top ? max(screen.safeAreaInsets.top, screen.frame.maxY - screen.visibleFrame.maxY) : 0)),
+                position: dockPositionProvider(),
+                // With an automatically hidden menu bar, AppKit can still
+                // inset standard window frames even though visibleFrame spans
+                // the full screen. Recognize those ordinary maximized windows.
+                windowFrameInsetTolerance: screen.frame.maxY - screen.visibleFrame.maxY < 1
+                    ? NSStatusBar.system.thickness + WindowReservationGeometryPolicy.defaultEdgeTolerance
+                    : 0
             )
         }
     }

@@ -57,6 +57,30 @@ final class WindowReservationGeometryTests: XCTestCase {
         ))
     }
 
+    func testOrdinaryMaximizedWindowWithoutMenuBarIsReservedOnEveryEdge() {
+        let frame = CGRect(x: 2056, y: 157, width: 2048, height: 1152)
+        for position in DockPosition.allCases {
+            let display = WindowReservationDisplayGeometry(
+                identity: primaryIdentity, frame: frame, visibleFrame: frame,
+                reservedHeight: 79, position: position, windowFrameInsetTolerance: 34
+            )
+            for topInset in [CGFloat(0), 30] {
+                let maximized = CGRect(x: frame.minX, y: frame.minY + topInset,
+                                       width: frame.width, height: frame.height - topInset)
+                let ordinary = WindowReservationGeometryPolicy.adjustment(
+                    for: maximized, displays: [display], isNativeFullScreen: false
+                )
+                XCTAssertNotNil(ordinary, "\(position), inset \(topInset)")
+                if let ordinary {
+                    XCTAssertTrue(WindowReservationGeometryPolicy.clearsReservedEdge(ordinary.targetFrame, in: display))
+                }
+            }
+            XCTAssertNil(WindowReservationGeometryPolicy.adjustment(
+                for: frame, displays: [display], isNativeFullScreen: true
+            ))
+        }
+    }
+
     func testFillWindowKeepsItsExistingOuterMargins() {
         let display = makeDisplay(
             frame: CGRect(x: 0, y: 0, width: 1_440, height: 900),

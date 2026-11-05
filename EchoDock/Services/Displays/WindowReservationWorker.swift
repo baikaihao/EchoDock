@@ -63,6 +63,7 @@ final class WindowReservationWorker {
     private var isWorkspaceRecoveryScheduled = false
     private var displayRefreshWorkItem: DispatchWorkItem?
     private var isStarted = false
+    private var needsWindowRefresh = false
 
     init(context: WindowReservationContext, executor: AccessibilityRunLoop, workspace: NSWorkspace,
          permissionService: AccessibilityPermissionService, currentProcessIdentifier: pid_t) {
@@ -111,6 +112,7 @@ final class WindowReservationWorker {
         applicationObservers.removeAll()
         mutationSuppressions.removeAll()
         displayGeometries.removeAll()
+        needsWindowRefresh = false
         isStarted = false
     }
 
@@ -138,7 +140,7 @@ final class WindowReservationWorker {
         let nextDisplayGeometries = shouldBeActive
             ? currentDisplayGeometries()
             : []
-        if !refreshAllWindows {
+        if !refreshAllWindows, !needsWindowRefresh {
             if shouldBeActive,
                !nextDisplayGeometries.isEmpty,
                nextDisplayGeometries == displayGeometries {
@@ -169,6 +171,7 @@ final class WindowReservationWorker {
             restoreManagedWindows()
             removeUnusedAccessibilityObservers()
             displayGeometries.removeAll()
+            needsWindowRefresh = false
             return
         }
 
@@ -180,13 +183,15 @@ final class WindowReservationWorker {
             restoreManagedWindows()
             removeAllAccessibilityObservers()
             displayGeometries.removeAll()
+            needsWindowRefresh = false
             return
         }
 
         let shouldRefreshApplications = refreshAllWindows
-            || previousDisplayGeometries.isEmpty
+            || previousDisplayGeometries != nextDisplayGeometries
+            || needsWindowRefresh
         displayGeometries = nextDisplayGeometries
-        if previousDisplayGeometries != nextDisplayGeometries {
+        if previousDisplayGeometries != nextDisplayGeometries || needsWindowRefresh {
             reconcileManagedWindows()
         }
         guard shouldRefreshApplications else { return }
@@ -202,6 +207,9 @@ final class WindowReservationWorker {
         }
         applications.forEach(ensureAccessibilityObserver)
         applications.forEach { refreshWindows(processIdentifier: $0.processIdentifier) }
+        // A newer geometry snapshot can interrupt AX work while the icon-size
+        // slider is moving. Retry on the next reconcile even if sizes match.
+        needsWindowRefresh = !budget.canContinue
     }
 
     fileprivate func enqueueAccessibilityNotification(observer: AXObserver, element: AXUIElement, name: String) {
@@ -795,7 +803,7 @@ final class WindowReservationWorker {
             ) {
                 return
             }
-            if isLikelyFullScreenFrame(currentFrame) {
+            if isLikelyFullScreenFrame(currentFrame, window: window) {
                 return
             }
             // A user-initiated move or resize takes ownership of the new frame.
@@ -809,12 +817,13 @@ final class WindowReservationWorker {
 
         if let adjustment = WindowReservationGeometryPolicy.adjustment(
             for: currentFrame,
-            displays: displayGeometries
+            displays: displayGeometries,
+            isNativeFullScreen: accessibilityBool(of: window, attribute: "AXFullScreen")
         ), let appliedFrame = setAccessibilityFrame(
             adjustment.targetFrame,
             of: window
-        ), appliedFrame.maxY <= adjustment.targetFrame.maxY
-            + WindowReservationGeometryPolicy.defaultFrameTolerance {
+        ), let display = displayGeometries.first(where: { $0.identity == adjustment.displayIdentity }),
+           WindowReservationGeometryPolicy.clearsReservedEdge(appliedFrame, in: display) {
             managedWindows.append(ManagedWindow(
                 element: window,
                 processIdentifier: processIdentifier,
@@ -867,7 +876,7 @@ final class WindowReservationWorker {
                 managedWindows.remove(at: index)
                 removeUnusedAccessibilityObservers()
             }
-        } else if !isLikelyFullScreenFrame(currentFrame) {
+        } else if !isLikelyFullScreenFrame(currentFrame, window: window) {
             // The user changed this window after the feature was disabled.
             managedWindows.remove(at: index)
             removeUnusedAccessibilityObservers()
@@ -878,7 +887,7 @@ final class WindowReservationWorker {
         var retained: [ManagedWindow] = []
         for managed in managedWindows {
             guard let currentFrame = accessibilityFrame(of: managed.element) else {
-                if isWorkspaceRecoveryScheduled {
+                if isWorkspaceRecoveryScheduled || !budget.canContinue {
                     retained.append(managed)
                 }
                 continue
@@ -887,7 +896,7 @@ final class WindowReservationWorker {
                 currentFrame,
                 managed.reservedFrame
             ) else {
-                if isLikelyFullScreenFrame(currentFrame) {
+                if isLikelyFullScreenFrame(currentFrame, window: managed.element) {
                     retained.append(managed)
                 } else {
                     scheduleEvaluation(
@@ -900,7 +909,8 @@ final class WindowReservationWorker {
 
             if let adjustment = WindowReservationGeometryPolicy.adjustment(
                 for: managed.originalFrame,
-                displays: displayGeometries
+                displays: displayGeometries,
+                isNativeFullScreen: accessibilityBool(of: managed.element, attribute: "AXFullScreen")
             ) {
                 if WindowReservationGeometryPolicy.framesApproximatelyEqual(
                     adjustment.targetFrame,
@@ -935,7 +945,7 @@ final class WindowReservationWorker {
                 currentFrame,
                 managed.reservedFrame
             ) else {
-                if isLikelyFullScreenFrame(currentFrame) {
+                if isLikelyFullScreenFrame(currentFrame, window: managed.element) {
                     retained.append(managed)
                 }
                 continue
@@ -947,8 +957,11 @@ final class WindowReservationWorker {
         managedWindows = retained
     }
 
-    private func isLikelyFullScreenFrame(_ frame: CGRect) -> Bool {
-        input.allDisplayFrames.contains { WindowReservationGeometryPolicy.framesApproximatelyEqual(frame, $0) }
+    private func isLikelyFullScreenFrame(_ frame: CGRect, window: AXUIElement) -> Bool {
+        if let isFullScreen = accessibilityBool(of: window, attribute: "AXFullScreen") {
+            return isFullScreen
+        }
+        return input.allDisplayFrames.contains { WindowReservationGeometryPolicy.framesApproximatelyEqual(frame, $0) }
     }
 
     private func restore(_ managed: ManagedWindow) -> Bool {

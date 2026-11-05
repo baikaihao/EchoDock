@@ -104,22 +104,33 @@ struct DockContextMenuPlacement {
     static func menuFrame(
         menuSize: NSSize,
         anchorFrame: NSRect,
-        visibleScreenFrame: NSRect
+        visibleScreenFrame: NSRect,
+        position: DockPosition = .bottom
     ) -> NSRect {
         let width = max(0, menuSize.width)
         let height = max(0, menuSize.height)
         let minimumX = visibleScreenFrame.minX + screenMargin
         let maximumX = visibleScreenFrame.maxX - screenMargin - width
 
-        let centeredX = anchorFrame.midX - width / 2
+        let desiredX: CGFloat
+        switch position {
+        case .left: desiredX = anchorFrame.maxX + iconGap
+        case .right: desiredX = anchorFrame.minX - iconGap - width
+        case .top, .bottom: desiredX = anchorFrame.midX - width / 2
+        }
         let originX: CGFloat
         if maximumX >= minimumX {
-            originX = min(maximumX, max(minimumX, centeredX))
+            originX = min(maximumX, max(minimumX, desiredX))
         } else {
             originX = visibleScreenFrame.midX - width / 2
         }
 
-        let desiredY = anchorFrame.maxY + iconGap
+        let desiredY: CGFloat
+        switch position {
+        case .top: desiredY = anchorFrame.minY - iconGap - height
+        case .bottom: desiredY = anchorFrame.maxY + iconGap
+        case .left, .right: desiredY = anchorFrame.midY - height / 2
+        }
         let minimumY = visibleScreenFrame.minY + screenMargin
         let maximumY = visibleScreenFrame.maxY - screenMargin - height
         let originY: CGFloat
@@ -132,6 +143,35 @@ struct DockContextMenuPlacement {
         }
 
         return NSRect(x: originX, y: originY, width: width, height: height)
+    }
+
+    static func positionedEvent(
+        for menu: NSMenu,
+        sourceEvent: NSEvent,
+        in view: NSView,
+        anchorScreenFrame: NSRect,
+        position: DockPosition
+    ) -> NSEvent {
+        guard let window = view.window, let screen = window.screen else { return sourceEvent }
+        menu.update()
+        let frame = menuFrame(
+            menuSize: menu.size,
+            anchorFrame: anchorScreenFrame,
+            visibleScreenFrame: screen.visibleFrame,
+            position: position
+        )
+        let topLeftInWindow = window.convertPoint(fromScreen: NSPoint(x: frame.minX, y: frame.maxY))
+        return NSEvent.mouseEvent(
+            with: DockPrimaryPressPolicy.contextMenuEventType(for: sourceEvent.type),
+            location: topLeftInWindow,
+            modifierFlags: sourceEvent.modifierFlags,
+            timestamp: sourceEvent.timestamp,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: sourceEvent.eventNumber,
+            clickCount: sourceEvent.clickCount,
+            pressure: sourceEvent.pressure
+        ) ?? sourceEvent
     }
 }
 
@@ -376,33 +416,16 @@ final class DockItemButton: NSButton, NSDraggingSource {
     }
 
     private func contextMenuEvent(for menu: NSMenu, sourceEvent: NSEvent) -> NSEvent {
-        guard let window, let screen = window.screen else { return sourceEvent }
-        menu.update()
+        guard let window else { return sourceEvent }
         let iconFrameInWindow = convert(magnifiedIconFrame, to: nil)
         let iconFrameOnScreen = window.convertToScreen(iconFrameInWindow)
-        let menuFrame = DockContextMenuPlacement.menuFrame(
-            menuSize: menu.size,
-            anchorFrame: iconFrameOnScreen,
-            visibleScreenFrame: screen.visibleFrame
+        return DockContextMenuPlacement.positionedEvent(
+            for: menu,
+            sourceEvent: sourceEvent,
+            in: self,
+            anchorScreenFrame: iconFrameOnScreen,
+            position: dockPosition
         )
-        let topLeftInWindow = window.convertPoint(fromScreen: NSPoint(
-            x: menuFrame.minX,
-            y: menuFrame.maxY
-        ))
-
-        return NSEvent.mouseEvent(
-            with: DockPrimaryPressPolicy.contextMenuEventType(
-                for: sourceEvent.type
-            ),
-            location: topLeftInWindow,
-            modifierFlags: sourceEvent.modifierFlags,
-            timestamp: sourceEvent.timestamp,
-            windowNumber: window.windowNumber,
-            context: nil,
-            eventNumber: sourceEvent.eventNumber,
-            clickCount: sourceEvent.clickCount,
-            pressure: sourceEvent.pressure
-        ) ?? sourceEvent
     }
 
     /// Applies the shared transition's current magnification. The strip owns
@@ -477,7 +500,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
     }
 
     private func presentationRect(_ canonical: NSRect) -> NSRect {
-        var rect = dockPosition.viewRect(canonical, in: canonicalSize, flippedVertical: isFlipped)
+        var rect = dockPosition.contentPosition.viewRect(canonical, in: canonicalSize, flippedVertical: isFlipped)
         // Horizontal strips are unflipped, while NSButton uses a flipped y
         // axis. Convert the edge-oriented rectangle into the button's space.
         if !dockPosition.isVertical, isFlipped {
@@ -536,13 +559,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
         let indicator = presentationRect(
             NSRect(x: canonicalSlotFrame.midX - 2, y: 1, width: 4, height: 4)
         )
-        // Keep top-Dock dots below the visible icon, including during hover.
-        let targetIndicatorPosition = dockPosition == .top
-            ? NSPoint(
-                x: targetIconFrame.midX,
-                y: isFlipped ? targetIconFrame.maxY + 5 : targetIconFrame.minY - 5
-            )
-            : NSPoint(x: indicator.midX, y: indicator.midY)
+        let targetIndicatorPosition = NSPoint(x: indicator.midX, y: indicator.midY)
         let badgeY = isFlipped
             ? targetIconFrame.minY + 2
             : targetIconFrame.maxY - 18

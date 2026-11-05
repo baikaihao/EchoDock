@@ -192,6 +192,12 @@ final class DisplayCoordinator {
         }
     }
 
+    func windowReservationHeight(for displayIdentity: DisplayIdentity) -> CGFloat? {
+        // Available even when full-screen content or an input candidate has
+        // temporarily hidden the panel; its resting size has not changed.
+        panels[displayIdentity]?.windowReservationHeight
+    }
+
     var windowSnapRegions: [WindowEdgeSnapRegion] {
         panels.compactMap { identity, panel in
             guard let bodyFrame = panel.restingDockBodyFrameInScreen,

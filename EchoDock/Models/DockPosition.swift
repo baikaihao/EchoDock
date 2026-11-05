@@ -4,6 +4,8 @@ enum DockPosition: String, Codable, CaseIterable, Sendable {
     case top, bottom, left, right
 
     var isVertical: Bool { self == .left || self == .right }
+    /// Top placement reuses the bottom Dock's content without mirroring it.
+    var contentPosition: DockPosition { self == .top ? .bottom : self }
     var localizationKey: String { "settings.appearance.position.\(rawValue)" }
 
     /// Existing layout algorithms use x along the strip and y toward the desktop.

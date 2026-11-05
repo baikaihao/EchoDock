@@ -57,6 +57,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences: preferences,
             snapRegionsProvider: { [weak displayCoordinator] in
                 displayCoordinator?.windowSnapRegions ?? []
+            },
+            reservationDepthProvider: { [weak displayCoordinator] descriptor in
+                displayCoordinator?.windowReservationHeight(for: descriptor.identity)
             }
         )
         displayCoordinator.onTopologyChange = { [weak nativeDockPolicyController] _ in

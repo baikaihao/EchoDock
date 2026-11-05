@@ -7,10 +7,12 @@ struct WindowReservationDisplayGeometry: Equatable {
     let visibleFrame: CGRect
     let reservedHeight: CGFloat
     var position: DockPosition = .bottom
+    var windowFrameInsetTolerance: CGFloat = 0
 
     var canonical: Self {
         Self(identity: identity, frame: position.canonicalAccessibilityFrame(frame),
-             visibleFrame: position.canonicalAccessibilityFrame(visibleFrame), reservedHeight: reservedHeight)
+             visibleFrame: position.canonicalAccessibilityFrame(visibleFrame), reservedHeight: reservedHeight,
+             windowFrameInsetTolerance: windowFrameInsetTolerance)
     }
 
     var availableFrame: CGRect {
@@ -283,7 +285,11 @@ enum WindowReservationMetrics {
     /// snapping above the resting glass body. Magnification is intentionally
     /// allowed to float over windows, matching the native Dock's behavior.
     static func reservedHeight(iconSize: CGFloat) -> CGFloat {
-        max(0, iconSize) + 30 + WindowEdgeSnapGeometryPolicy.defaultGap
+        reservedHeight(bodyThickness: max(0, iconSize) + 24)
+    }
+
+    static func reservedHeight(bodyThickness: CGFloat) -> CGFloat {
+        max(0, bodyThickness) + 6 + WindowEdgeSnapGeometryPolicy.defaultGap
     }
 }
 
@@ -292,24 +298,34 @@ enum WindowReservationGeometryPolicy {
     static let defaultEdgeTolerance: CGFloat = 12
     static let defaultFrameTolerance: CGFloat = 2
 
+    static func clearsReservedEdge(_ windowFrame: CGRect, in display: WindowReservationDisplayGeometry) -> Bool {
+        let available = display.canonical.availableFrame
+        guard !available.isNull else { return false }
+        return display.position.canonicalAccessibilityFrame(windowFrame).maxY
+            <= available.maxY + defaultFrameTolerance
+    }
+
     static func adjustment(
         for windowFrame: CGRect,
         displays: [WindowReservationDisplayGeometry],
-        edgeTolerance: CGFloat = defaultEdgeTolerance
+        edgeTolerance: CGFloat = defaultEdgeTolerance,
+        isNativeFullScreen: Bool? = nil
     ) -> WindowReservationAdjustment? {
+        guard isNativeFullScreen != true else { return nil }
         guard let display = bestDisplay(for: windowFrame, displays: displays) else { return nil }
         if display.position != .bottom {
             return adjustment(for: display.position.canonicalAccessibilityFrame(windowFrame),
-                              displays: [display.canonical], edgeTolerance: edgeTolerance).map {
+                              displays: [display.canonical], edgeTolerance: edgeTolerance,
+                              isNativeFullScreen: isNativeFullScreen).map {
                 WindowReservationAdjustment(displayIdentity: $0.displayIdentity,
                     targetFrame: display.position.physicalAccessibilityFrame($0.targetFrame))
             }
         }
-        guard !isLikelyFullScreen(
+        guard (isNativeFullScreen == false || !isLikelyFullScreen(
                 windowFrame,
                 in: display,
                 edgeTolerance: defaultEdgeTolerance
-              ),
+              )),
               isMaximizedOrBottomTiled(
                 windowFrame,
                 in: display,
@@ -365,9 +381,10 @@ enum WindowReservationGeometryPolicy {
         in display: WindowReservationDisplayGeometry,
         edgeTolerance: CGFloat = defaultEdgeTolerance
     ) -> Bool {
+        let tolerance = max(edgeTolerance, display.windowFrameInsetTolerance)
         if display.position != .bottom {
             return isMaximizedOrBottomTiled(display.position.canonicalAccessibilityFrame(windowFrame),
-                                           in: display.canonical, edgeTolerance: edgeTolerance)
+                                           in: display.canonical, edgeTolerance: tolerance)
         }
         let visible = display.visibleFrame
         guard windowFrame.width > 0,
@@ -377,17 +394,17 @@ enum WindowReservationGeometryPolicy {
             return false
         }
 
-        let isHorizontallyContained = windowFrame.minX >= visible.minX - edgeTolerance
-            && windowFrame.maxX <= visible.maxX + edgeTolerance
-        let isVerticallyContained = windowFrame.minY >= visible.minY - edgeTolerance
-            && windowFrame.maxY <= visible.maxY + edgeTolerance
-        let touchesBottom = abs(windowFrame.maxY - visible.maxY) <= edgeTolerance
-        let startsAtTop = abs(windowFrame.minY - visible.minY) <= edgeTolerance
-        let startsAtMiddle = abs(windowFrame.minY - visible.midY) <= edgeTolerance
+        let isHorizontallyContained = windowFrame.minX >= visible.minX - tolerance
+            && windowFrame.maxX <= visible.maxX + tolerance
+        let isVerticallyContained = windowFrame.minY >= visible.minY - tolerance
+            && windowFrame.maxY <= visible.maxY + tolerance
+        let touchesBottom = abs(windowFrame.maxY - visible.maxY) <= tolerance
+        let startsAtTop = abs(windowFrame.minY - visible.minY) <= tolerance
+        let startsAtMiddle = abs(windowFrame.minY - visible.midY) <= tolerance
         let usesHorizontalTileGrid = horizontalEdgesUseTileGrid(
             windowFrame,
             visibleFrame: visible,
-            edgeTolerance: edgeTolerance
+            edgeTolerance: tolerance
         )
 
         return isHorizontallyContained
@@ -413,9 +430,8 @@ enum WindowReservationGeometryPolicy {
         return leadingMatches && trailingMatches
     }
 
-    /// Accessibility does not publish a documented full-screen state
-    /// attribute. A window matching the physical display bounds is therefore
-    /// treated conservatively as full-screen and is never resized.
+    /// Conservative fallback when the window does not expose AXFullScreen.
+    /// Ordinary maximized windows can also fill a display with no menu bar.
     static func isLikelyFullScreen(
         _ windowFrame: CGRect,
         in display: WindowReservationDisplayGeometry,
