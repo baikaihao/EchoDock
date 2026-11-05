@@ -259,14 +259,21 @@ final class DockPanelController {
     private var isReconcilingPointer = false
 
     private var position: DockPosition { preferences.dockPosition }
-    private var topInset: CGFloat {
-        guard let screen = NSScreen.screens.first(where: {
+    private var displayScreen: NSScreen? {
+        NSScreen.screens.first(where: {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == descriptor.displayID
-        }) else { return 0 }
+        })
+    }
+    private var topInset: CGFloat {
+        guard let screen = displayScreen else { return 0 }
         return max(screen.safeAreaInsets.top, screen.frame.maxY - screen.visibleFrame.maxY)
     }
+    private var bottomInset: CGFloat {
+        guard let screen = displayScreen else { return 0 }
+        return max(screen.safeAreaInsets.bottom, screen.visibleFrame.minY - screen.frame.minY)
+    }
     private var maximumPanelLength: CGFloat {
-        max(160, (position.isVertical ? descriptor.frame.height - topInset : descriptor.frame.width) - 24)
+        max(160, (position.isVertical ? descriptor.frame.height - topInset - bottomInset : descriptor.frame.width) - 24)
     }
 
     private var presentationMode: DockPanelPresentationMode {
@@ -740,7 +747,7 @@ final class DockPanelController {
             contentView.needsLayout = true
             contentView.layoutSubtreeIfNeeded()
         } else {
-            panel.setFrame(position.panelFrame(size: size, display: descriptor.frame, topInset: topInset), display: false)
+            panel.setFrame(position.panelFrame(size: size, display: descriptor.frame, topInset: topInset, bottomInset: bottomInset), display: false)
         }
         if shouldDisplay, state.allowsTooltipPresentation {
             reconcileCurrentPointer()
@@ -1004,7 +1011,7 @@ final class DockPanelController {
 
     private func resizePanel(to size: NSSize) {
         guard size.width > 0, size.height > 0 else { return }
-        let targetFrame = position.panelFrame(size: size, display: descriptor.frame, topInset: topInset)
+        let targetFrame = position.panelFrame(size: size, display: descriptor.frame, topInset: topInset, bottomInset: bottomInset)
         guard !NSEqualRects(panel.frame, targetFrame) else { return }
         let shouldDisplay = panel.isVisible
         panel.setFrame(targetFrame, display: false)

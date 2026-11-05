@@ -46,6 +46,8 @@ final class DockContentView: NSView {
     private(set) var preferredWidth: CGFloat = 160
     private(set) var preferredHeight: CGFloat = 72
     private var iconSize: CGFloat = 48
+    private var preferredIconSize: CGFloat = 48
+    private var preferredIconSpacing: CGFloat = 5.2
     private var maxWidth: CGFloat = 800
     private var backgroundTransparency: CGFloat = 0.17
     private var backgroundBlur: CGFloat = DockBackgroundBlur.defaultValue
@@ -183,7 +185,7 @@ final class DockContentView: NSView {
         scrollView.position = position
         var effectiveAnimatedRemovalIdentities = animatedRemovalIdentities
         let wasLaunchBounceActive = isLaunchBounceActive
-        self.iconSize = iconSize
+        self.preferredIconSize = iconSize
         self.maxWidth = max(160, maxWidth)
         self.backgroundTransparency = DockBackgroundTransparency.clamped(backgroundTransparency)
         self.backgroundBlur = DockBackgroundBlur.clamped(backgroundBlur)
@@ -193,7 +195,7 @@ final class DockContentView: NSView {
             ? min(1.80, max(1.0, magnificationScale))
             : 1.0
         self.magnificationRange = min(3.50, max(1.25, magnificationRange))
-        self.iconSpacing = min(28, max(4, iconSpacing))
+        self.preferredIconSpacing = min(28, max(4, iconSpacing))
         self.tooltipGap = min(24, max(0, tooltipGap))
         if let handoff = pendingShortcutDropHandoff {
             let incomingShortcutIDs = snapshot.items.compactMap(\.kind.shortcutID)
@@ -223,17 +225,6 @@ final class DockContentView: NSView {
         self.snapshot = snapshot
         self.launchBounceAnimationsEnabled = launchBounceAnimationsEnabled
         self.runningIndicatorsEnabled = runningIndicatorsEnabled
-        updateBackgroundAppearance()
-        // Leave enough headroom for the magnified icon while preserving a
-        // compact native-Dock-like baseline.
-        dockBodyHeight = iconSize + 24
-        updateBackgroundCornerRadius()
-        let baseStripHeight = max(0, dockBodyHeight - 8)
-        let baselineInset: CGFloat = 8
-        let requiredStripHeight = baselineInset + iconSize * self.magnificationScale + 4
-        maximumMagnificationHeadroom = max(0, requiredStripHeight - baseStripHeight)
-        maximumLaunchBounceHeadroom = iconSize
-            * DockLaunchBounceTransition.maximumAmplitudeScale
         if !self.magnificationEnabled {
             isMagnificationHeadroomActive = false
         }
@@ -536,7 +527,7 @@ final class DockContentView: NSView {
         stripView.apply(
             items: items,
             pinnedItemCount: snapshot.pinnedItemCount,
-            iconSize: iconSize,
+            iconSize: preferredIconSize,
             iconProvider: iconProvider,
             onAction: { [weak self] item in self?.onItemAction?(item) },
             onContextAction: { [weak self] item, action in
@@ -555,13 +546,26 @@ final class DockContentView: NSView {
             magnificationEnabled: magnificationEnabled,
             magnificationScale: magnificationScale,
             magnificationRange: magnificationRange,
-            iconSpacing: iconSpacing,
+            iconSpacing: preferredIconSpacing,
             animatedInsertionIdentities: insertionIdentities,
             animatedRemovalIdentities: animatedRemovalIdentities,
             reconfigureExistingItems: reconfigureExistingItems,
             launchBounceAnimationsEnabled: launchBounceAnimationsEnabled,
-            runningIndicatorsEnabled: runningIndicatorsEnabled
+            runningIndicatorsEnabled: runningIndicatorsEnabled,
+            maximumLayoutLength: position.isVertical ? maxWidth - 20 : nil
         )
+        updateIconMetricsFromStrip()
+    }
+
+    private func updateIconMetricsFromStrip() {
+        iconSize = stripView.iconSize
+        iconSpacing = stripView.iconSpacing
+        dockBodyHeight = iconSize + 24
+        updateBackgroundCornerRadius()
+        let baseStripHeight = max(0, dockBodyHeight - 8)
+        let requiredStripHeight = 8 + iconSize * magnificationScale + 4
+        maximumMagnificationHeadroom = max(0, requiredStripHeight - baseStripHeight)
+        maximumLaunchBounceHeadroom = iconSize * DockLaunchBounceTransition.maximumAmplitudeScale
     }
 
     private func beginFileDrag(_ sender: NSDraggingInfo) -> NSDragOperation {
@@ -1023,19 +1027,8 @@ final class DockContentView: NSView {
     }
 
     private func updatePreferredWidthFromStrip() {
-        let targetWidth = targetPreferredWidth
-        guard abs(targetWidth - preferredWidth) > 0.01 else { return }
-
-        preferredWidth = targetWidth
-        guard !isFileDragActive else {
-            needsLayout = true
-            layoutSubtreeIfNeeded()
-            return
-        }
-        frame.size = position.layoutSize(for: NSSize(width: targetWidth, height: preferredHeight))
-        needsLayout = true
-        layoutSubtreeIfNeeded()
-        onPreferredSizeChange?(frame.size)
+        updateIconMetricsFromStrip()
+        synchronizePreferredGeometry()
     }
 
     private var targetPreferredWidth: CGFloat {

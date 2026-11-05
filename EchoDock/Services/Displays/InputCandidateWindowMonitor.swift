@@ -9,6 +9,7 @@ struct InputCandidateWindowSnapshot: Equatable {
     let ownerBundleIdentifier: String?
     let alpha: CGFloat
     let isOnScreen: Bool
+    var ownerBundleURL: URL? = nil
 }
 
 struct InputCandidateDockRegion: Equatable {
@@ -17,6 +18,26 @@ struct InputCandidateDockRegion: Equatable {
 }
 
 enum InputCandidateAvoidancePolicy {
+    private static let inputMethodUIBundleIdentifiers: Set<String> = [
+        "com.apple.textinputmenuagent",
+        "com.apple.textinputui",
+        "com.apple.textinputui.xpc.textinputui"
+    ]
+
+    private static func isInputMethodWindow(_ window: InputCandidateWindowSnapshot) -> Bool {
+        // Floating windows also belong to shortcut HUDs and system utilities.
+        // Window level and accessory-app status alone do not identify an IME.
+        if let url = window.ownerBundleURL, url.isFileURL,
+           url.standardizedFileURL.pathComponents.contains("Input Methods") {
+            return true
+        }
+        guard let identifier = window.ownerBundleIdentifier?.lowercased() else { return false }
+        let components = identifier.split(separator: ".")
+        return components.contains("inputmethod")
+            || components.contains("inputmethodkit")
+            || inputMethodUIBundleIdentifiers.contains(identifier)
+    }
+
     // Mission Control and Show Desktop create overlays below the Dock level.
     // They are desktop infrastructure, not input candidates to hide the Dock for.
     private static let desktopManagementBundleIdentifiers: Set<String> = [
@@ -40,6 +61,7 @@ enum InputCandidateAvoidancePolicy {
                 && window.ownerProcessIdentifier != excludingProcessIdentifier
                 && !window.isRegularApplication
                 && !desktopManagementBundleIdentifiers.contains(window.ownerBundleIdentifier ?? "")
+                && isInputMethodWindow(window)
                 && window.layer > normalWindowLevel
                 && window.layer < dockWindowLevel
                 && isValid(window.bounds)
@@ -114,6 +136,7 @@ private enum SystemInputCandidateWindowSnapshotProvider {
     private struct WindowOwner {
         let isRegularApplication: Bool
         let bundleIdentifier: String?
+        let bundleURL: URL?
     }
 
     static func currentSnapshots() -> [InputCandidateWindowSnapshot]? {
@@ -150,7 +173,8 @@ private enum SystemInputCandidateWindowSnapshotProvider {
                 )
                 owner = WindowOwner(
                     isRegularApplication: application?.activationPolicy == .regular,
-                    bundleIdentifier: application?.bundleIdentifier
+                    bundleIdentifier: application?.bundleIdentifier,
+                    bundleURL: application?.bundleURL
                 )
                 ownerCache[processIdentifier] = owner
             }
@@ -164,7 +188,8 @@ private enum SystemInputCandidateWindowSnapshotProvider {
                 alpha: CGFloat(
                     (info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1
                 ),
-                isOnScreen: (info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? true
+                isOnScreen: (info[kCGWindowIsOnscreen as String] as? NSNumber)?.boolValue ?? true,
+                ownerBundleURL: owner.bundleURL
             )
         }
     }

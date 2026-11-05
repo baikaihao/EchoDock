@@ -127,7 +127,7 @@ final class InputCandidateAvoidancePolicyTests: XCTestCase {
             layer: layer,
             ownerProcessIdentifier: ownerPID,
             isRegularApplication: isRegularApplication,
-            ownerBundleIdentifier: nil,
+            ownerBundleIdentifier: "com.apple.inputmethod.SCIM",
             alpha: alpha,
             isOnScreen: isOnScreen
         )
@@ -149,10 +149,23 @@ struct InputCandidateSystemOverlayTests {
         #expect(occludedDisplays(windows: [overlay]).isEmpty)
     }
 
-    @Test(arguments: ["com.apple.inputmethod.SCIM", "im.rime.inputmethod.Squirrel", nil] as [String?])
+    @Test(arguments: ["com.apple.inputmethod.SCIM", "im.rime.inputmethod.Squirrel", "com.apple.InputMethodKit.UIService"] as [String?])
     func inputCandidateStillHidesDock(bundleIdentifier: String?) {
         let candidate = makeWindow(bounds: dockFrame, layer: 19, bundleIdentifier: bundleIdentifier)
 
+        #expect(occludedDisplays(windows: [candidate]) == [displayIdentity])
+    }
+
+    @Test(arguments: [nil, "com.apple.finder", "com.apple.controlcenter", "com.example.shortcutHUD"] as [String?], [1, 3, 19])
+    func shortcutAndSystemOverlaysKeepDockVisible(bundleIdentifier: String?, layer: Int) {
+        let overlay = makeWindow(bounds: dockFrame, layer: layer, bundleIdentifier: bundleIdentifier)
+        #expect(occludedDisplays(windows: [overlay]).isEmpty)
+    }
+
+    @Test
+    func inputMethodInstalledOutsideTheUsualBundleNamespaceStillHidesDock() {
+        var candidate = makeWindow(bounds: dockFrame, layer: 19, bundleIdentifier: "com.example.CustomIME")
+        candidate.ownerBundleURL = URL(fileURLWithPath: "/Library/Input Methods/CustomIME.app")
         #expect(occludedDisplays(windows: [candidate]) == [displayIdentity])
     }
 

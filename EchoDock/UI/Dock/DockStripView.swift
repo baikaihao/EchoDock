@@ -34,7 +34,10 @@ final class DockStripView: NSView {
     private var orderedButtons: [DockItemButton] = []
     private var separatorViews: [NSView] = []
     private var pinnedItemCount = 0
-    private var iconSize: CGFloat = 48
+    private(set) var iconSize: CGFloat = 48
+    private var preferredIconSize: CGFloat = 48
+    private var preferredIconSpacing: CGFloat = 5.2
+    private var maximumLayoutLength: CGFloat?
     private(set) var requiredWidth: CGFloat = 0
     private(set) var visualContentFrame: NSRect = .zero
     private(set) var restingVisualContentFrame: NSRect = .zero
@@ -67,7 +70,7 @@ final class DockStripView: NSView {
     private var isFileDragActive = false
     private var magnificationEnabled = true
     private var maximumMagnification: CGFloat = 1.18
-    private var iconSpacing: CGFloat = 5.2
+    private(set) var iconSpacing: CGFloat = 5.2
     /// Radius in slot-widths over which the pointer influences neighboring
     /// icons. Keeping this separate from the scale makes the interaction
     /// tunable without changing the document layout.
@@ -204,7 +207,8 @@ final class DockStripView: NSView {
         animatedRemovalIdentities: Set<ApplicationIdentity> = [],
         reconfigureExistingItems: Bool = true,
         launchBounceAnimationsEnabled: Bool = false,
-        runningIndicatorsEnabled: Bool = true
+        runningIndicatorsEnabled: Bool = true,
+        maximumLayoutLength: CGFloat? = nil
     ) {
         visualButtonHitTargets.removeAll(keepingCapacity: true)
         let now = CACurrentMediaTime()
@@ -218,11 +222,12 @@ final class DockStripView: NSView {
         ).isEmpty
         self.onHover = onHover
         self.pinnedItemCount = pinnedItemCount
-        self.iconSize = iconSize
+        self.preferredIconSize = iconSize
+        self.maximumLayoutLength = maximumLayoutLength
         self.magnificationEnabled = magnificationEnabled
         self.maximumMagnification = min(1.80, max(1.0, magnificationScale))
         self.magnificationRange = min(3.50, max(1.25, magnificationRange))
-        self.iconSpacing = min(28, max(4, iconSpacing))
+        self.preferredIconSpacing = min(28, max(4, iconSpacing))
         let incomingByIdentity = Dictionary(uniqueKeysWithValues: items.map { ($0.identity, $0) })
         let incomingIdentities = Set(incomingByIdentity.keys)
 
@@ -1084,6 +1089,21 @@ final class DockStripView: NSView {
         let separatorIndices = sectionSeparatorIndices(
             for: orderedButtons.compactMap(\.item)
         )
+        let metrics = DockMagnificationLayout.fittingIconMetrics(
+            itemCount: orderedButtons.count,
+            pinnedItemCount: pinnedItemCount,
+            separatorIndices: separatorIndices,
+            preferredIconSize: preferredIconSize,
+            preferredSpacing: preferredIconSpacing,
+            maximumLength: maximumLayoutLength,
+            maximumScale: magnificationEnabled ? maximumMagnification : 1,
+            influenceRange: magnificationRange
+        )
+        let metricsChanged = abs(iconSize - metrics.iconSize) > 0.0001
+            || abs(iconSpacing - metrics.spacing) > 0.0001
+        iconSize = metrics.iconSize
+        iconSpacing = metrics.spacing
+        orderedButtons.forEach { $0.setIconSize(iconSize) }
         let newValue = DockMagnificationLayout.maximumRequiredWidth(
             itemCount: orderedButtons.count,
             pinnedItemCount: pinnedItemCount,
@@ -1095,7 +1115,7 @@ final class DockStripView: NSView {
         )
         let changed = abs(newValue - requiredWidth) > 0.01
         requiredWidth = newValue
-        return changed
+        return changed || metricsChanged
     }
 
     private func updateLaunchBounceActivity(notify: Bool = true) {

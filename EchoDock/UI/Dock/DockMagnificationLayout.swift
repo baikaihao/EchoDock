@@ -202,6 +202,49 @@ enum DockInsertionHorizontalAlignment {
 }
 
 struct DockMagnificationLayout {
+    struct IconMetrics {
+        let iconSize: CGFloat
+        let spacing: CGFloat
+    }
+
+    /// Fit a vertical strip including separators and the full hover expansion.
+    /// Keep very long lists scrollable rather than shrinking below 16 points.
+    static func fittingIconMetrics(
+        itemCount: Int,
+        pinnedItemCount: Int,
+        separatorIndices: Set<Int>,
+        preferredIconSize: CGFloat,
+        preferredSpacing: CGFloat,
+        maximumLength: CGFloat?,
+        maximumScale: CGFloat,
+        influenceRange: CGFloat
+    ) -> IconMetrics {
+        let preferred = IconMetrics(iconSize: preferredIconSize, spacing: preferredSpacing)
+        guard let maximumLength, itemCount > 0, preferredIconSize > 0 else { return preferred }
+        let requiredLength = maximumRequiredWidth(
+            itemCount: itemCount,
+            pinnedItemCount: pinnedItemCount,
+            separatorIndices: separatorIndices,
+            iconSize: preferredIconSize,
+            spacing: preferredSpacing,
+            maximumScale: maximumScale,
+            influenceRange: influenceRange
+        )
+        guard requiredLength > maximumLength else { return preferred }
+        let separatorCount = normalizedSeparatorIndices(
+            itemCount: itemCount,
+            pinnedItemCount: pinnedItemCount,
+            separatorIndices: separatorIndices
+        ).count
+        let fixedLength = CGFloat(separatorCount) * separatorSpace * max(1, maximumScale)
+            + (maximumScale > 1 ? 8 : 0)
+        let scale = min(1, max(
+            min(16, preferredIconSize) / preferredIconSize,
+            (maximumLength - fixedLength) / max(1, requiredLength - fixedLength)
+        ))
+        return IconMetrics(iconSize: preferredIconSize * scale, spacing: preferredSpacing * scale)
+    }
+
     static let separatorSpace: CGFloat = 13
     static let separatorLineWidth: CGFloat = 0.5
     static let separatorHeightResponse: CGFloat = 0.12

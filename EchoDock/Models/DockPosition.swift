@@ -60,9 +60,9 @@ enum DockPosition: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    func panelFrame(size: NSSize, display: NSRect, topInset: CGFloat = 0) -> NSRect {
+    func panelFrame(size: NSSize, display: NSRect, topInset: CGFloat = 0, bottomInset: CGFloat = 0) -> NSRect {
         let centerX = display.midX - size.width / 2
-        let centerY = (display.minY + display.maxY - topInset) / 2 - size.height / 2
+        let centerY = (display.minY + bottomInset + display.maxY - topInset) / 2 - size.height / 2
         switch self {
         case .bottom: return NSRect(x: centerX, y: display.minY + 6, width: size.width, height: size.height)
         case .top: return NSRect(x: centerX, y: display.maxY - topInset - 6 - size.height, width: size.width, height: size.height)

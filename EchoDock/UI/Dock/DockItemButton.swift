@@ -473,11 +473,23 @@ final class DockItemButton: NSButton, NSDraggingSource {
     }
 
     private var visualSlotFrameInBounds: NSRect {
-        dockPosition.viewRect(
-            canonicalSlotFrame,
-            in: canonicalSize,
-            flippedVertical: isFlipped
-        )
+        presentationRect(canonicalSlotFrame)
+    }
+
+    private func presentationRect(_ canonical: NSRect) -> NSRect {
+        var rect = dockPosition.viewRect(canonical, in: canonicalSize, flippedVertical: isFlipped)
+        // Horizontal strips are unflipped, while NSButton uses a flipped y
+        // axis. Convert the edge-oriented rectangle into the button's space.
+        if !dockPosition.isVertical, isFlipped {
+            rect.origin.y = bounds.height - rect.maxY
+        }
+        return rect
+    }
+
+    func setIconSize(_ size: CGFloat) {
+        guard abs(iconSize - size) > 0.0001 else { return }
+        iconSize = size
+        updatePresentationLayers()
     }
 
     private var magnifiedIconFrame: NSRect {
@@ -493,16 +505,7 @@ final class DockItemButton: NSButton, NSDraggingSource {
             width: side,
             height: side
         )
-        if dockPosition == .bottom, isFlipped {
-            return NSRect(x: canonical.minX, y: bounds.height - canonical.maxY, width: side, height: side)
-        }
-        // NSButton is flipped too. Match its local y direction so a side
-        // Dock's magnified neighbors move apart instead of toward each other.
-        return dockPosition.viewRect(
-            canonical,
-            in: canonicalSize,
-            flippedVertical: isFlipped
-        )
+        return presentationRect(canonical)
     }
 
     /// Keep the decoded icon texture stable and let Core Animation handle the
@@ -530,12 +533,16 @@ final class DockItemButton: NSButton, NSDraggingSource {
         )
 
         let targetIndicatorBounds = NSRect(x: 0, y: 0, width: 4, height: 4)
-        let indicator = dockPosition.viewRect(
-            NSRect(x: canonicalSlotFrame.midX - 2, y: 1, width: 4, height: 4),
-            in: canonicalSize,
-            flippedVertical: isFlipped
+        let indicator = presentationRect(
+            NSRect(x: canonicalSlotFrame.midX - 2, y: 1, width: 4, height: 4)
         )
-        let targetIndicatorPosition = NSPoint(x: indicator.midX, y: dockPosition == .bottom && isFlipped ? bounds.maxY - 3 : indicator.midY)
+        // Keep top-Dock dots below the visible icon, including during hover.
+        let targetIndicatorPosition = dockPosition == .top
+            ? NSPoint(
+                x: targetIconFrame.midX,
+                y: isFlipped ? targetIconFrame.maxY + 5 : targetIconFrame.minY - 5
+            )
+            : NSPoint(x: indicator.midX, y: indicator.midY)
         let badgeY = isFlipped
             ? targetIconFrame.minY + 2
             : targetIconFrame.maxY - 18
